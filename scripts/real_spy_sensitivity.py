@@ -3,6 +3,11 @@
 Discovery uses SPY 2016-2019 only. A candidate must clear fixed research gates before the
 highest training profit factor is frozen and evaluated on SPY 2020-2025. The candidate list is
 intentionally small and one-factor-heavy to reduce optimization degrees of freedom.
+
+Entry quotes must always be same-day. For held positions, exact same-day quotes are preferred.
+If the four-leg close mark is internally inconsistent, the whole combo may use the immediately
+previous trading day's exact four-leg quotes once. This never looks forward, never permits a
+stale entry, and every fallback is disclosed in the result.
 """
 
 from __future__ import annotations
@@ -16,8 +21,13 @@ from pathlib import Path
 
 import duckdb
 
-from condorpilot.execution import ExecutionConfig, close_debit, entry_credit
-from condorpilot.models import StrategyConfig
+from condorpilot.execution import (
+    ExecutionConfig,
+    ExecutionDataError,
+    close_debit,
+    entry_credit,
+)
+from condorpilot.models import IronCondor, StrategyConfig
 from condorpilot.risk import ExitAction, contracts_for_risk_budget, evaluate_exit
 from condorpilot.strategy import NoTradeError, build_iron_condor
 from scripts.real_spy_baseline import (
@@ -89,6 +99,65 @@ MIN_DISCOVERY_PF = 1.0
 MAX_DISCOVERY_DRAWDOWN = 0.10
 
 
+def _prior_combo_fallback_events(
+    *,
+    mark_date: date,
+    source_date: date,
+    condor: IronCondor,
+) -> tuple[dict[str, object], ...]:
+    return tuple(
+        {
+            "reason": "inconsistent_same_day_combo_quote",
+            "mark_date": mark_date.isoformat(),
+            "source_date": source_date.isoformat(),
+            "expiration": leg.expiration.isoformat(),
+            "strike": leg.strike,
+            "option_type": leg.option_type.value,
+        }
+        for leg in (
+            condor.long_put,
+            condor.short_put,
+            condor.short_call,
+            condor.long_call,
+        )
+    )
+
+
+def _held_close_mark(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    day: date,
+    previous_day: date | None,
+    source: IronCondor,
+    execution: ExecutionConfig,
+) -> tuple[IronCondor, float, tuple[dict[str, object], ...]]:
+    marked, stale = _mark_condor(con, day, previous_day, source)
+    try:
+        return marked, close_debit(marked, execution), stale
+    except ExecutionDataError as current_error:
+        if previous_day is None:
+            raise RuntimeError(
+                f"inconsistent held combo quote on {day} with no prior trading day"
+            ) from current_error
+        try:
+            previous_marked, _ = _mark_condor(con, previous_day, None, source)
+            previous_debit = close_debit(previous_marked, execution)
+        except (ExecutionDataError, RuntimeError) as previous_error:
+            raise RuntimeError(
+                "held combo is unmarkable on current and immediately previous trading day: "
+                f"current={day}, prior={previous_day}, expiration={source.expiration}"
+            ) from previous_error
+        return (
+            previous_marked,
+            previous_debit,
+            _prior_combo_fallback_events(
+                mark_date=day,
+                source_date=previous_day,
+                condor=source,
+            ),
+        )
+
+
 def _run_variant(
     con: duckdb.DuckDBPyConnection,
     variant: Variant,
@@ -128,9 +197,14 @@ def _run_variant(
         previous_day = underlying_rows[index - 1][0] if index > 0 else None
 
         if position is not None:
-            marked, stale = _mark_condor(con, day, previous_day, position.condor)
+            marked, debit, stale = _held_close_mark(
+                con,
+                day=day,
+                previous_day=previous_day,
+                source=position.condor,
+                execution=execution,
+            )
             stale_events.extend(stale)
-            debit = close_debit(marked, execution)
             dte = (position.condor.expiration - day).days
             if dte < 0:
                 raise RuntimeError(
@@ -182,12 +256,13 @@ def _run_variant(
         chain = _entry_chain(con, day, strategy)
         try:
             condor = build_iron_condor(chain, spot=spot, as_of=day, config=strategy)
-        except NoTradeError as exc:
+            credit = entry_credit(condor, execution)
+            immediate_debit = close_debit(condor, execution)
+        except (NoTradeError, ExecutionDataError) as exc:
             no_trade_reasons[str(exc)] += 1
             equity_rows.append((day, realized_equity, False))
             continue
 
-        credit = entry_credit(condor, execution)
         if credit <= 0 or credit / condor.max_width < strategy.min_credit_to_width:
             no_trade_reasons["modeled execution credit below entry threshold"] += 1
             equity_rows.append((day, realized_equity, False))
@@ -211,7 +286,6 @@ def _run_variant(
             contracts=contracts,
             entry_commission=execution.commission(contracts),
         )
-        immediate_debit = close_debit(condor, execution)
         equity_rows.append(
             (day, _marked_equity(realized_equity, position, immediate_debit, execution), True)
         )
@@ -255,6 +329,7 @@ def _run_variant(
         "exit_reasons": dict(Counter(item.reason for item in trades)),
         "stale_mark_leg_count": len(stale_events),
         "stale_mark_day_count": len({item["mark_date"] for item in stale_events}),
+        "stale_mark_reason_counts": dict(Counter(str(item.get("reason", "missing_leg")) for item in stale_events)),
         "top_no_trade_reasons": no_trade_reasons.most_common(5),
     }
 
