@@ -12,17 +12,30 @@ class NoTradeError(RuntimeError):
 
 
 def _closest_expiration(
-    quotes: list[OptionQuote], *, as_of: date, target_dte: int, minimum_dte: int
+    quotes: list[OptionQuote],
+    *,
+    as_of: date,
+    target_dte: int,
+    minimum_dte: int,
+    max_deviation_days: int,
 ) -> date:
     expirations = sorted({quote.expiration for quote in quotes})
     eligible = [
         expiration
         for expiration in expirations
         if (expiration - as_of).days > minimum_dte
+        and abs((expiration - as_of).days - target_dte) <= max_deviation_days
     ]
     if not eligible:
-        raise NoTradeError("no eligible expiration is available")
+        raise NoTradeError(
+            "no expiration is available within the configured DTE tolerance "
+            f"({target_dte} +/- {max_deviation_days} days)"
+        )
     return min(eligible, key=lambda expiration: abs((expiration - as_of).days - target_dte))
+
+
+def _quote_is_usable(quote: OptionQuote, *, max_relative_spread: float) -> bool:
+    return quote.ask > 0 and quote.relative_spread <= max_relative_spread
 
 
 def _short_by_delta(
@@ -31,6 +44,8 @@ def _short_by_delta(
     option_type: OptionType,
     spot: float,
     target_delta: float,
+    max_delta_deviation: float,
+    max_relative_spread: float,
 ) -> OptionQuote:
     if option_type is OptionType.PUT:
         candidates = [
@@ -40,6 +55,7 @@ def _short_by_delta(
             and quote.strike < spot
             and quote.bid > 0
             and quote.delta < 0
+            and _quote_is_usable(quote, max_relative_spread=max_relative_spread)
         ]
     else:
         candidates = [
@@ -49,18 +65,36 @@ def _short_by_delta(
             and quote.strike > spot
             and quote.bid > 0
             and quote.delta > 0
+            and _quote_is_usable(quote, max_relative_spread=max_relative_spread)
         ]
 
     if not candidates:
-        raise NoTradeError(f"no liquid OTM {option_type.value} candidates are available")
-    return min(candidates, key=lambda quote: abs(abs(quote.delta) - target_delta))
+        raise NoTradeError(f"no usable OTM {option_type.value} candidates are available")
+
+    selected = min(candidates, key=lambda quote: abs(abs(quote.delta) - target_delta))
+    deviation = abs(abs(selected.delta) - target_delta)
+    if deviation > max_delta_deviation:
+        raise NoTradeError(
+            f"closest {option_type.value} delta {abs(selected.delta):.3f} is outside "
+            f"target {target_delta:.3f} +/- {max_delta_deviation:.3f}"
+        )
+    return selected
 
 
 def _quote_at_strike(
-    quotes: list[OptionQuote], *, option_type: OptionType, strike: float
+    quotes: list[OptionQuote],
+    *,
+    option_type: OptionType,
+    strike: float,
+    max_relative_spread: float,
 ) -> OptionQuote:
     for quote in quotes:
         if quote.option_type is option_type and abs(quote.strike - strike) < 1e-9:
+            if not _quote_is_usable(quote, max_relative_spread=max_relative_spread):
+                raise NoTradeError(
+                    f"required {option_type.value} wing at strike {strike:g} has an "
+                    "unusable bid/ask spread"
+                )
             return quote
     raise NoTradeError(
         f"required {option_type.value} wing at strike {strike:g} is not available"
@@ -76,11 +110,8 @@ def build_iron_condor(
 ) -> IronCondor:
     """Select one Iron Condor from a normalized option chain.
 
-    The first strategy version intentionally stays simple and auditable:
-    - expiration nearest target DTE, but still beyond the configured time exit;
-    - short put/call nearest the configured absolute delta;
-    - exact-width protective wings;
-    - reject trades whose entry credit is too small for the defined risk width.
+    Sparse or illiquid chains are rejected instead of silently changing the configured
+    experiment. DTE, delta, wing availability, quote quality, and credit are hard constraints.
     """
     if spot <= 0:
         raise ValueError("spot must be positive")
@@ -93,6 +124,7 @@ def build_iron_condor(
         as_of=as_of,
         target_dte=config.target_dte,
         minimum_dte=config.exit_dte,
+        max_deviation_days=config.max_dte_deviation_days,
     )
     chain = [quote for quote in quotes if quote.expiration == expiration]
 
@@ -101,22 +133,28 @@ def build_iron_condor(
         option_type=OptionType.PUT,
         spot=spot,
         target_delta=config.short_delta,
+        max_delta_deviation=config.max_delta_deviation,
+        max_relative_spread=config.max_bid_ask_spread_fraction,
     )
     short_call = _short_by_delta(
         chain,
         option_type=OptionType.CALL,
         spot=spot,
         target_delta=config.short_delta,
+        max_delta_deviation=config.max_delta_deviation,
+        max_relative_spread=config.max_bid_ask_spread_fraction,
     )
     long_put = _quote_at_strike(
         chain,
         option_type=OptionType.PUT,
         strike=short_put.strike - config.wing_width,
+        max_relative_spread=config.max_bid_ask_spread_fraction,
     )
     long_call = _quote_at_strike(
         chain,
         option_type=OptionType.CALL,
         strike=short_call.strike + config.wing_width,
+        max_relative_spread=config.max_bid_ask_spread_fraction,
     )
 
     condor = IronCondor(
