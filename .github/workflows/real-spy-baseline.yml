@@ -1,9 +1,10 @@
-name: Real SPY 2020-2025 Baseline
+name: Real SPY Historical Validation
 
 on:
   pull_request:
     paths:
       - scripts/real_spy_baseline.py
+      - scripts/real_spy_sensitivity.py
       - .github/workflows/real-spy-baseline.yml
   workflow_dispatch:
 
@@ -11,9 +12,9 @@ permissions:
   contents: read
 
 jobs:
-  real-spy-baseline:
+  real-spy-validation:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,7 +28,7 @@ jobs:
       - name: Download real SPY option history
         run: |
           mkdir -p /tmp/spy-real
-          for year in 2020 2021 2022 2023 2024 2025; do
+          for year in 2016 2017 2018 2019 2020 2021 2022 2023 2024 2025; do
             echo "Downloading SPY options ${year}"
             curl -L --fail --retry 4 --retry-delay 2 \
               -o "/tmp/spy-real/options_${year}.parquet" \
@@ -38,44 +39,51 @@ jobs:
             "https://raw.githubusercontent.com/anahatsingh-ui/options-dataset-hist/main/spy/underlying_prices.parquet"
           ls -lh /tmp/spy-real
           du -sh /tmp/spy-real
-      - name: Run frozen CondorPilot baseline on real data
+      - name: Run frozen 2020-2025 baseline
         run: |
           python scripts/real_spy_baseline.py \
             --data-dir /tmp/spy-real \
             --start 2020-01-02 \
-            --end 2025-12-16 \
+            --end 2025-12-12 \
             --output /tmp/real-spy-baseline.json
-      - name: Inspect first real-data continuity failure
-        if: failure()
+      - name: Run predeclared sensitivity and temporal validation
         run: |
-          python - <<'PY'
-          import duckdb
-
-          con = duckdb.connect()
-          rows = con.execute(
-              """
-              SELECT contract_id, date, expiration, strike, type, last, mark,
-                     bid, ask, volume, open_interest, implied_volatility, delta
-              FROM read_parquet('/tmp/spy-real/options_2020.parquet')
-              WHERE CAST(date AS DATE) BETWEEN DATE '2020-06-18' AND DATE '2020-06-26'
-                AND CAST(expiration AS DATE) = DATE '2020-07-24'
-                AND CAST(strike AS DOUBLE) = 280
-                AND lower(CAST(type AS VARCHAR)) = 'put'
-              ORDER BY date
-              """
-          ).fetchall()
-          print('SURROUNDING_HELD_LEG_ROWS=', rows)
-          PY
-      - name: Show result JSON
+          python scripts/real_spy_sensitivity.py \
+            --data-dir /tmp/spy-real \
+            --output /tmp/real-spy-sensitivity.json
+      - name: Show compact research result
         if: always()
         run: |
-          if [ -f /tmp/real-spy-baseline.json ]; then
-            cat /tmp/real-spy-baseline.json
-          fi
-      - name: Upload real-data evidence artifact
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          for path in (
+              Path('/tmp/real-spy-baseline.json'),
+              Path('/tmp/real-spy-sensitivity.json'),
+          ):
+              if not path.exists():
+                  continue
+              payload = json.loads(path.read_text())
+              print(f'=== {path.name} ===')
+              if 'performance' in payload:
+                  print(json.dumps({
+                      'performance': payload['performance'],
+                      'benchmarks': payload['benchmarks'],
+                      'stale_marks': {
+                          'legs': payload['dataset']['stale_mark_leg_count'],
+                          'days': payload['dataset']['stale_mark_day_count'],
+                      },
+                  }, indent=2, sort_keys=True))
+              else:
+                  print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+      - name: Upload real-data research artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: real-spy-2020-2025-baseline
-          path: /tmp/real-spy-baseline.json
+          name: real-spy-historical-validation
+          path: |
+            /tmp/real-spy-baseline.json
+            /tmp/real-spy-sensitivity.json
           if-no-files-found: warn
