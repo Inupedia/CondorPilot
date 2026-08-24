@@ -122,3 +122,36 @@ jobs:
           assert len(result.folds) >= 1
           assert len(result.dataset.fingerprint) == 64
           PY
+      - name: Smoke test real-CSV evidence CLI
+        run: |
+          python - <<'PY'
+          from datetime import UTC, datetime
+          from condorpilot.history import build_synthetic_history
+          from condorpilot.importers import save_option_chain_csv
+
+          generated = build_synthetic_history(
+              symbol="SPY",
+              start=datetime(2026, 1, 5, 21, 0, tzinfo=UTC),
+              spots=[100 + i * 0.05 for i in range(100)],
+              volatility=0.25,
+              target_dte=10,
+              expiration_interval_days=7,
+              strike_increment=1,
+              spread=0,
+          )
+          weekdays = tuple(item for item in generated if item.as_of.weekday() < 5)
+          save_option_chain_csv(weekdays, "/tmp/spy-evidence.csv")
+          PY
+          condorpilot evidence \
+            --csv /tmp/spy-evidence.csv --output-dir /tmp/evidence --symbol SPY \
+            --dtes 10 --deltas 0.15 --wing-widths 5 --profit-targets 0.50 \
+            --stop-multiples 2 --exit-dtes 3 --risk-fractions 0.01 \
+            --train-size 30 --test-size 15 --step-size 15 --min-train-trades 1 \
+            --max-dte-deviation-days 4 --max-delta-deviation 0.08 \
+            --max-bid-ask-spread-fraction 1 --min-credit-to-width 0 \
+            --slippage 0 --commission 0 --minimum-oos-folds 2 --minimum-oos-trades 1 \
+            --minimum-tested-fraction 0.10 --minimum-positive-fold-fraction 0 \
+            --minimum-profit-factor 0 --maximum-oos-drawdown 1 \
+            --minimum-oos-total-return -1 --iv-lookback 20 --target-iv-dte 10
+          test -s /tmp/evidence/evidence.json
+          test -s /tmp/evidence/evidence.md
