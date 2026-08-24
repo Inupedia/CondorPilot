@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "condorpilot"
-version = "0.4.0"
-description = "Systematic Iron Condor strategy engine for backtesting, screening, risk management, and automated options trading."
+version = "0.5.0"
+description = "Research-preview Iron Condor engine for auditable backtesting, data validation, and strategy research."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Inupedia" }]
