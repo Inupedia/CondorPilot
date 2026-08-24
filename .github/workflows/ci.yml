@@ -27,5 +27,9 @@ jobs:
         run: ruff check .
       - name: Test
         run: pytest
-      - name: Smoke test CLI
+      - name: Smoke test strategy CLI
         run: condorpilot demo --spot 100 --iv 0.25 --strike-increment 5 --min-credit-to-width 0
+      - name: Smoke test backtester CLI
+        run: >-
+          condorpilot backtest-demo --spot 100 --days 30 --iv 0.25
+          --strike-increment 5 --min-credit-to-width 0
