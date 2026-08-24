@@ -1,8 +1,8 @@
 # CondorPilot
 
-**Research-preview Iron Condor engine for auditable data validation, walk-forward testing, and strategy evidence.**
+**Research-preview Iron Condor engine for auditable data validation, walk-forward testing, strategy evidence, and paper-trading safety controls.**
 
-> **Status: Research Preview — No-Go for live money.** CondorPilot is not a proven profitable trading system and has no broker execution or paper-trading safety layer. Passing tests or even earning a `research_pass` verdict does **not** authorize live trading.
+> **Status: Research Preview — No-Go for live money.** CondorPilot is not a proven profitable trading system. A broker-agnostic paper-trading safety core now exists, but there is still no validated broker adapter or operational paper-trading deployment. Passing tests or even earning a `research_pass` verdict does **not** authorize live trading.
 
 CondorPilot turns a discretionary Iron Condor idea into an explicit research workflow: synchronized historical option chains → integrity checks → defined-risk strategy construction → realistic execution assumptions → event-driven backtesting → walk-forward/OOS validation → volatility-regime attribution → durable evidence report.
 
@@ -122,7 +122,7 @@ Every completed evidence report contains:
 
 - dataset fingerprint;
 - experiment fingerprint, including strategy grid, execution assumptions, walk-forward configuration, and evidence thresholds;
-- OOS folds, trades, return, drawdown, win rate, and tested fraction;
+- OOS folds, trades, return, drawdown, win rate, profit factor, and tested fraction;
 - cash and Buy & Hold benchmarks;
 - parameter-selection stability;
 - OOS trade P/L grouped by **entry-date volatility regime**;
@@ -138,7 +138,7 @@ Verdicts are deliberately limited to:
 
 The CLI always prints `live_trading=NO-GO`, and the JSON field `live_trading_approved` is permanently `false` in this research layer.
 
-Default evidence gates require at least four OOS folds, 20 OOS trades, 25% tested-snapshot coverage, 80% known regime attribution, 25% parameter-selection stability, non-negative OOS return, max OOS drawdown ≤25%, and at least half of OOS folds profitable. Buy & Hold outperformance is reported but is not required by default because an income strategy can have a different risk objective; it can be required explicitly with `--minimum-excess-vs-buy-hold`.
+Default evidence gates require at least four OOS folds, 20 OOS trades, 25% tested-snapshot coverage, 80% known regime attribution, 25% parameter-selection stability, OOS profit factor ≥1.0, non-negative OOS return, max OOS drawdown ≤25%, and at least half of OOS folds profitable. Buy & Hold outperformance is reported but is not required by default because an income strategy can have a different risk objective; it can be required explicitly with `--minimum-excess-vs-buy-hold`.
 
 ## Volatility regimes
 
@@ -176,6 +176,27 @@ Current hard rules include:
 - history that jumps from before expiration to after expiration fails instead of using a later underlying price;
 - one normalized vendor snapshot uses one shared quote timestamp.
 
+## Paper-trading safety core
+
+Version 0.9.0 introduces the broker-agnostic safety layer that a future paper adapter must obey. It does **not** connect to a brokerage by itself.
+
+Implemented controls:
+
+- explicit multi-leg order lifecycle: `new → submitting → working / partially_filled → filled / cancelled / rejected / error`;
+- idempotency keys: repeating the same intent returns the existing order instead of submitting twice; reusing a key for a different intent fails;
+- monotonic fill validation: filled quantity cannot move backward or exceed requested quantity;
+- leg-level fill accounting for combo orders;
+- automatic **kill switch** when multi-leg fill progress becomes uneven and the defined-risk shape is broken;
+- account-level pre-trade gates for per-order risk, aggregate defined risk, underlying concentration, daily realized loss, open-position count, working-order count, and contracts per order;
+- atomic JSON state persistence for single-process restart recovery;
+- restart reconciliation of every persisted non-terminal broker order;
+- open-order reconciliation that detects broker orders missing locally and local orders missing at the broker;
+- fail-closed behavior: unresolved reconciliation drift trips the kill switch and blocks new orders.
+
+A balanced partial combo fill can remain structurally defined-risk. An unbalanced fill such as only the short put filling is treated as **legging exposure**, not as a normal partial fill.
+
+The safety core exposes a `PaperBroker` protocol internally, but there is intentionally no production broker implementation yet. The next adapter must prove these invariants against an actual broker paper environment before CondorPilot can claim paper-trading readiness.
+
 ## Historical CSV schema
 
 Each row is one option quote; rows sharing `observed_at` form one snapshot.
@@ -195,14 +216,15 @@ Required columns:
 
 These limitations remain material and keep the project **No-Go for live money**:
 
-- no partial fills or legging risk;
-- no order rejection/replace state machine;
-- no broker/network latency model;
-- no early assignment model for American-style ETF options;
-- no broker reconciliation or restart recovery;
-- no account-level portfolio exposure limits;
-- no kill switch;
-- no validated paper-trading adapter.
+- no validated broker paper adapter;
+- no real broker combo-order capability/permission discovery;
+- no broker-specific reject/replace and cancel/replace mapping;
+- no measured broker/network latency or stale-session handling;
+- no early assignment/exercise workflow for American-style ETF options;
+- no live position reconciliation against actual assigned shares/options;
+- no portfolio Greeks/margin model beyond conservative defined-risk limits;
+- no multi-process/distributed locking for the JSON paper-state store;
+- no operational fault-injection campaign against a real paper brokerage environment.
 
 ## Package layout
 
@@ -214,11 +236,12 @@ src/condorpilot/
 ├── execution.py         # fill assumptions and quote-consistency checks
 ├── history.py           # timestamped chains + synthetic fixtures
 ├── importers.py         # normalized CSV import/export
-├── market.py            # provider boundary
+├── market.py            # market-data provider boundary
 ├── models.py            # quotes, condor, strategy invariants
+├── paper.py             # paper order state, idempotency, risk, reconciliation, kill switch
 ├── pricing.py           # Black-Scholes demo helper
 ├── research.py          # parameter grids and metrics
-├── risk.py              # sizing and explicit exit semantics
+├── risk.py              # backtest sizing and explicit exit semantics
 ├── strategy.py          # DTE/delta/liquidity-constrained selection
 ├── validation.py        # rolling/anchored walk-forward OOS validation
 ├── volatility.py        # VIX / IV regimes
@@ -235,7 +258,7 @@ pytest
 condorpilot evidence --help
 ```
 
-CI runs linting, unit tests, and strategy/backtest/research/regime/diagnostics/walk-forward/evidence smoke coverage on Python 3.11, 3.12, and 3.13.
+CI runs linting, unit tests, and strategy/backtest/research/regime/diagnostics/walk-forward/evidence/paper-safety coverage on Python 3.11, 3.12, and 3.13.
 
 ## Roadmap / hard gates
 
@@ -247,8 +270,9 @@ CI runs linting, unit tests, and strategy/backtest/research/regime/diagnostics/w
 6. ✅ Dataset diagnostics and evidence fingerprinting.
 7. ✅ Rolling/anchored walk-forward and frozen-parameter OOS validation.
 8. ✅ Durable real-data evidence pipeline and research verdicts.
-9. **Paper trading:** broker adapter, order state machine, partial fills, reconciliation, restart recovery, account risk and kill switch.
-10. Only after paper-trading safety and operational validation: evaluate whether any live deployment is justified.
+9. ✅ Broker-agnostic paper safety core: state machine, idempotency, partial-fill detection, persistence, reconciliation, account risk, kill switch.
+10. **Paper broker adapter + operational validation:** real paper orders, broker status mapping, reconnect/restart drills, assignment handling, fault injection.
+11. Only after paper-trading safety and operational validation: evaluate whether any live deployment is justified.
 
 ## Design principles
 
@@ -259,6 +283,7 @@ CI runs linting, unit tests, and strategy/backtest/research/regime/diagnostics/w
 - **No fabricated free fills.**
 - **No look-ahead labels or parameter selection.**
 - **Research PASS is not live GO.**
+- **Fail closed on broker/state drift.**
 - **Paper before live.**
 
 CondorPilot is research software, not financial advice.
