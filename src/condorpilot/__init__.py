@@ -27,6 +27,13 @@ from condorpilot.research import (
     summarize_result,
 )
 from condorpilot.strategy import NoTradeError, build_iron_condor
+from condorpilot.validation import (
+    WalkForwardConfig,
+    WalkForwardError,
+    WalkForwardFold,
+    WalkForwardResult,
+    run_walk_forward,
+)
 from condorpilot.vendors.thetadata import ThetaDataClient, ThetaDataConfig, ThetaDataError
 from condorpilot.volatility import (
     RegimeThresholds,
@@ -67,6 +74,10 @@ __all__ = [
     "VixObservation",
     "VolatilityObservation",
     "VolatilityRegime",
+    "WalkForwardConfig",
+    "WalkForwardError",
+    "WalkForwardFold",
+    "WalkForwardResult",
     "build_iron_condor",
     "build_regime_entry_filter",
     "build_volatility_regimes",
@@ -79,8 +90,9 @@ __all__ = [
     "rank_runs",
     "run_backtest",
     "run_parameter_sweep",
+    "run_walk_forward",
     "save_option_chain_csv",
     "summarize_result",
 ]
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
