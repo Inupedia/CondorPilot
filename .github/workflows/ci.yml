@@ -64,3 +64,61 @@ jobs:
           assert report.dte_coverage > 0
           assert report.executable_coverage > 0
           PY
+      - name: Smoke test walk-forward validation API
+        run: |
+          python - <<'PY'
+          from datetime import UTC, datetime
+          from condorpilot import BacktestConfig, ParameterGrid, StrategyConfig
+          from condorpilot import WalkForwardConfig, run_walk_forward
+          from condorpilot.execution import ExecutionConfig
+          from condorpilot.history import build_synthetic_history
+
+          history = build_synthetic_history(
+              symbol="SPY",
+              start=datetime(2026, 1, 5, 21, 0, tzinfo=UTC),
+              spots=[100 + i * 0.08 for i in range(50)],
+              volatility=0.25,
+              target_dte=10,
+              expiration_interval_days=7,
+              strike_increment=1,
+              spread=0.02,
+          )
+          base = BacktestConfig(
+              strategy=StrategyConfig(
+                  target_dte=10,
+                  max_dte_deviation_days=4,
+                  short_delta=0.15,
+                  max_delta_deviation=0.08,
+                  wing_width=5,
+                  max_bid_ask_spread_fraction=1,
+                  exit_dte=3,
+                  min_credit_to_width=0,
+              ),
+              execution=ExecutionConfig(
+                  slippage_fraction=0,
+                  commission_per_contract_per_leg=0,
+              ),
+          )
+          result = run_walk_forward(
+              history,
+              grid=ParameterGrid(
+                  target_dte=(10,),
+                  short_delta=(0.10, 0.15),
+                  wing_width=(5.0,),
+                  profit_target_fraction=(0.50,),
+                  stop_loss_credit_multiple=(2.0,),
+                  exit_dte=(3,),
+                  max_risk_fraction=(0.01,),
+              ),
+              base_config=base,
+              config=WalkForwardConfig(
+                  train_size=25,
+                  test_size=10,
+                  step_size=10,
+                  min_train_trades=1,
+                  require_dataset_pass=False,
+              ),
+          )
+          assert len(result.folds) >= 1
+          assert len(result.dataset.fingerprint) == 64
+          PY
