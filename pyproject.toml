@@ -37,3 +37,6 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.ruff.lint.isort]
 known-first-party = ["condorpilot"]
 known-third-party = ["duckdb"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/real_spy_*.py" = ["I001"]
