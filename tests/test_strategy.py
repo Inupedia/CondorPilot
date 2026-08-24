@@ -6,7 +6,6 @@ from condorpilot.market import SyntheticChainSpec, build_synthetic_chain
 from condorpilot.models import StrategyConfig
 from condorpilot.strategy import NoTradeError, build_iron_condor
 
-
 AS_OF = date(2026, 8, 24)
 
 
