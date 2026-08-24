@@ -44,6 +44,68 @@ jobs:
           --strike-increment 1 --iv-lookback 10 --tail 3
       - name: Smoke test evidence CLI surface
         run: condorpilot evidence --help
+      - name: Smoke test evidence CLI with persisted CSV
+        run: |
+          python - <<'PY'
+          from datetime import UTC, datetime
+
+          from condorpilot.history import OptionChainSnapshot, build_synthetic_history
+          from condorpilot.importers import save_option_chain_csv
+
+          generated = build_synthetic_history(
+              symbol="SPY",
+              start=datetime(2025, 1, 6, 21, 0, tzinfo=UTC),
+              spots=[100 + i * 0.03 for i in range(210)],
+              volatility=0.25,
+              target_dte=45,
+              expiration_interval_days=7,
+              strike_increment=1,
+              spread=0,
+          )
+          cleaned = []
+          for snapshot in generated:
+              if snapshot.as_of.weekday() >= 5:
+                  continue
+              quotes = tuple(
+                  quote
+                  for quote in snapshot.quotes
+                  if 20 <= (quote.expiration - snapshot.as_of).days <= 75
+                  and quote.mid > 0
+              )
+              cleaned.append(
+                  OptionChainSnapshot(
+                      observed_at=snapshot.observed_at,
+                      spot=snapshot.spot,
+                      quotes=quotes,
+                  )
+              )
+          save_option_chain_csv(tuple(cleaned), "/tmp/spy-evidence.csv")
+          PY
+          condorpilot evidence \
+            --csv /tmp/spy-evidence.csv \
+            --output-json /tmp/evidence.json \
+            --dtes 45 --deltas 0.15 --wing-widths 5 \
+            --profit-targets 0.50 --stop-multiples 2 \
+            --exit-dtes 21 --risk-fractions 0.01 \
+            --train-size 60 --test-size 30 --step-size 30 \
+            --min-train-trades 1 --minimum-oos-folds 1 \
+            --minimum-oos-trades 1 --minimum-tested-fraction 0 \
+            --minimum-known-regime-fraction 0 \
+            --minimum-selection-stability 0 \
+            --minimum-oos-return -10 --maximum-oos-drawdown 1 \
+            --minimum-profitable-fold-fraction 0 \
+            --min-credit-to-width 0 --slippage 0 --commission 0 \
+            --iv-lookback 20 --target-iv-dte 45
+          python - <<'PY'
+          import json
+
+          with open("/tmp/evidence.json", encoding="utf-8") as handle:
+              payload = json.load(handle)
+          assert len(payload["experiment_fingerprint"]) == 64
+          assert len(payload["dataset_fingerprint"]) == 64
+          assert payload["live_trading_approved"] is False
+          assert "profit_factor" in payload["oos"]
+          PY
       - name: Smoke test dataset diagnostics API
         run: |
           python - <<'PY'
@@ -195,6 +257,7 @@ jobs:
               minimum_oos_total_return=-10,
               maximum_oos_drawdown=1,
               minimum_profitable_fold_fraction=0,
+              minimum_oos_profit_factor=0,
           )
           result = run_evidence(
               history,

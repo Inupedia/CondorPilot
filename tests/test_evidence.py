@@ -1,3 +1,5 @@
+import json
+import math
 from datetime import UTC, datetime
 
 from condorpilot.backtest import BacktestConfig
@@ -6,7 +8,10 @@ from condorpilot.evidence import (
     EvidenceThresholds,
     ResearchVerdict,
     evidence_to_dict,
+    render_evidence_markdown,
     run_evidence,
+    save_evidence_json,
+    save_evidence_markdown,
 )
 from condorpilot.execution import ExecutionConfig
 from condorpilot.history import build_synthetic_history
@@ -104,76 +109,63 @@ def _lenient_evidence(**overrides) -> EvidenceThresholds:
         minimum_oos_total_return=-10.0,
         maximum_oos_drawdown=1.0,
         minimum_profitable_fold_fraction=0.0,
+        minimum_oos_profit_factor=0.0,
     )
     values.update(overrides)
     return EvidenceThresholds(**values)
 
 
-def test_evidence_run_is_traceable_and_never_approves_live_trading() -> None:
-    result = run_evidence(
+def _run(**threshold_overrides):
+    return run_evidence(
         _history(),
         grid=_grid(),
         base_config=_base(),
         walk_forward_config=_walk_forward(),
         diagnostic_thresholds=_diagnostics(),
-        evidence_thresholds=_lenient_evidence(),
+        evidence_thresholds=_lenient_evidence(**threshold_overrides),
         iv_lookback=20,
         target_iv_dte=10,
     )
+
+
+def test_evidence_run_is_traceable_and_never_approves_live_trading() -> None:
+    result = _run()
 
     assert result.verdict is ResearchVerdict.RESEARCH_PASS
     assert not result.live_trading_approved
     assert len(result.experiment_fingerprint) == 64
     assert len(result.walk_forward.dataset.fingerprint) == 64
     assert result.known_regime_trade_fraction == 1.0
+    assert result.oos_profit_factor >= 0
     regime_trade_count = sum(item.trade_count for item in result.regime_evidence)
     assert regime_trade_count == result.walk_forward.oos_trade_count
 
 
 def test_evidence_reports_insufficient_sample_before_outcome_quality() -> None:
-    result = run_evidence(
-        _history(),
-        grid=_grid(),
-        base_config=_base(),
-        walk_forward_config=_walk_forward(),
-        diagnostic_thresholds=_diagnostics(),
-        evidence_thresholds=_lenient_evidence(minimum_oos_trades=10_000),
-        iv_lookback=20,
-        target_iv_dte=10,
-    )
+    result = _run(minimum_oos_trades=10_000)
 
     assert result.verdict is ResearchVerdict.INSUFFICIENT_EVIDENCE
     assert any("OOS trades" in reason for reason in result.reasons)
 
 
 def test_evidence_can_fail_an_outcome_threshold_without_calling_it_live_go() -> None:
-    result = run_evidence(
-        _history(),
-        grid=_grid(),
-        base_config=_base(),
-        walk_forward_config=_walk_forward(),
-        diagnostic_thresholds=_diagnostics(),
-        evidence_thresholds=_lenient_evidence(minimum_oos_total_return=10.0),
-        iv_lookback=20,
-        target_iv_dte=10,
-    )
+    result = _run(minimum_oos_total_return=10.0)
 
     assert result.verdict is ResearchVerdict.RESEARCH_FAIL
     assert not result.live_trading_approved
     assert any("OOS return" in reason for reason in result.reasons)
 
 
+def test_profit_factor_is_part_of_verdict_when_finite() -> None:
+    baseline = _run()
+    if math.isfinite(baseline.oos_profit_factor):
+        result = _run(minimum_oos_profit_factor=baseline.oos_profit_factor + 1.0)
+        assert result.verdict is ResearchVerdict.RESEARCH_FAIL
+        assert any("profit factor" in reason for reason in result.reasons)
+
+
 def test_evidence_json_summary_keeps_provenance_benchmarks_and_regimes() -> None:
-    result = run_evidence(
-        _history(),
-        grid=_grid(),
-        base_config=_base(),
-        walk_forward_config=_walk_forward(),
-        diagnostic_thresholds=_diagnostics(),
-        evidence_thresholds=_lenient_evidence(),
-        iv_lookback=20,
-        target_iv_dte=10,
-    )
+    result = _run()
     payload = evidence_to_dict(result)
 
     assert payload["experiment_fingerprint"] == result.experiment_fingerprint
@@ -181,6 +173,36 @@ def test_evidence_json_summary_keeps_provenance_benchmarks_and_regimes() -> None
     assert payload["symbol"] == "SPY"
     assert payload["live_trading_approved"] is False
     assert payload["oos"]["folds"] == len(result.walk_forward.folds)
+    assert "profit_factor" in payload["oos"]
     assert "buy_hold_total_return" in payload["benchmarks"]
     assert len(payload["regimes"]) == 5
+    assert all("profit_factor" in item for item in payload["regimes"])
     assert payload["selected_parameters"]
+    assert len(payload["folds"]) == len(result.walk_forward.folds)
+
+
+def test_json_output_is_strict_even_when_profit_factor_is_infinite(tmp_path) -> None:
+    result = _run()
+    path = tmp_path / "evidence.json"
+    save_evidence_json(result, path)
+
+    payload = json.loads(path.read_text())
+    assert payload["live_trading_approved"] is False
+    assert "Infinity" not in path.read_text()
+    if math.isinf(result.oos_profit_factor):
+        assert payload["oos"]["profit_factor"] is None
+
+
+def test_markdown_report_is_human_reviewable_and_preserves_no_go(tmp_path) -> None:
+    result = _run()
+    path = tmp_path / "evidence.md"
+    save_evidence_markdown(result, path)
+    text = path.read_text()
+
+    assert text == render_evidence_markdown(result)
+    assert "Live trading approved:** `NO`" in text
+    assert result.experiment_fingerprint in text
+    assert result.walk_forward.dataset.fingerprint in text
+    assert "OOS profit factor" in text
+    assert "OOS folds" in text
+    assert "entry volatility regime" in text
