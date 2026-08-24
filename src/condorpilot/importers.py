@@ -10,7 +10,7 @@ from pathlib import Path
 from condorpilot.history import HistoricalDataError, OptionChainSnapshot, validate_history
 from condorpilot.models import OptionQuote, OptionType
 
-CSV_COLUMNS = (
+REQUIRED_CSV_COLUMNS = (
     "observed_at",
     "symbol",
     "spot",
@@ -21,6 +21,7 @@ CSV_COLUMNS = (
     "ask",
     "delta",
 )
+CSV_COLUMNS = (*REQUIRED_CSV_COLUMNS, "implied_volatility")
 
 
 class CsvHistoryError(HistoricalDataError):
@@ -45,12 +46,24 @@ def _parse_float(value: str, *, field: str, row_number: int) -> float:
         raise CsvHistoryError(f"row {row_number}: invalid {field} {value!r}") from exc
 
 
+def _parse_optional_float(
+    value: str | None,
+    *,
+    field: str,
+    row_number: int,
+) -> float | None:
+    if value is None or not value.strip():
+        return None
+    return _parse_float(value, field=field, row_number=row_number)
+
+
 def load_option_chain_csv(path: str | Path) -> tuple[OptionChainSnapshot, ...]:
     """Load a normalized long-form option-chain CSV into immutable snapshots.
 
     Each CSV row is one option quote. Rows sharing ``observed_at`` form one snapshot.
     The importer normalizes snapshot ordering but rejects duplicate contracts and inconsistent
-    spot/symbol values within the same timestamp.
+    spot/symbol values within the same timestamp. ``implied_volatility`` is optional so v0.3
+    datasets remain readable.
     """
     csv_path = Path(path)
     groups: dict[datetime, list[OptionQuote]] = defaultdict(list)
@@ -61,7 +74,9 @@ def load_option_chain_csv(path: str | Path) -> tuple[OptionChainSnapshot, ...]:
         reader = csv.DictReader(handle)
         if reader.fieldnames is None:
             raise CsvHistoryError("CSV file is missing a header")
-        missing = [column for column in CSV_COLUMNS if column not in reader.fieldnames]
+        missing = [
+            column for column in REQUIRED_CSV_COLUMNS if column not in reader.fieldnames
+        ]
         if missing:
             raise CsvHistoryError(f"CSV header is missing required columns: {', '.join(missing)}")
 
@@ -81,6 +96,11 @@ def load_option_chain_csv(path: str | Path) -> tuple[OptionChainSnapshot, ...]:
             bid = _parse_float(row["bid"], field="bid", row_number=row_number)
             ask = _parse_float(row["ask"], field="ask", row_number=row_number)
             delta = _parse_float(row["delta"], field="delta", row_number=row_number)
+            implied_volatility = _parse_optional_float(
+                row.get("implied_volatility"),
+                field="implied_volatility",
+                row_number=row_number,
+            )
             try:
                 option_type = OptionType(row["option_type"].strip().lower())
             except ValueError as exc:
@@ -113,6 +133,7 @@ def load_option_chain_csv(path: str | Path) -> tuple[OptionChainSnapshot, ...]:
                     bid=bid,
                     ask=ask,
                     delta=delta,
+                    implied_volatility=implied_volatility,
                 )
             )
 
@@ -142,6 +163,7 @@ def save_option_chain_csv(
         writer.writeheader()
         for snapshot in history:
             for quote in snapshot.quotes:
+                iv = quote.implied_volatility
                 writer.writerow(
                     {
                         "observed_at": snapshot.observed_at.isoformat(),
@@ -153,5 +175,6 @@ def save_option_chain_csv(
                         "bid": f"{quote.bid:.10g}",
                         "ask": f"{quote.ask:.10g}",
                         "delta": f"{quote.delta:.10g}",
+                        "implied_volatility": "" if iv is None else f"{iv:.10g}",
                     }
                 )
