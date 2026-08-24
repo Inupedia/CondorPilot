@@ -133,8 +133,35 @@ maximum drawdown < 10%.
 | 80th | 22 | -2.44% | 2.80% | 54.5% | 0.46 | No |
 
 No volatility-regime candidate qualified. The workflow emitted `SELECTED_REGIME=None`.
-Therefore QQQ external holdout testing was deliberately not run. Running an external holdout
-for a strategy that already failed discovery would not validate a predeclared hypothesis.
+
+## No-lookahead volatility-risk-premium test
+
+A final materially different hypothesis tested whether the strategy only works when option
+implied volatility is rich relative to recently realized movement, rather than merely high in
+absolute or percentile terms.
+
+The strategy remained frozen. Volatility risk premium (VRP) was defined as:
+
+`current ATM IV - prior-20-trading-day annualized realized volatility`
+
+The ATM IV proxy is the same nearest-45-DTE / nearest-to-spot median call/put IV used above.
+Realized volatility is the annualized population standard deviation of the prior 20 close-to-close
+log returns. The current day's return is excluded, so this signal has no look-ahead component.
+
+Three thresholds were declared before execution: VRP > 0, VRP > 2 volatility points, and
+VRP > 5 volatility points. The same discovery gates as the IV-percentile test were applied.
+
+| Minimum VRP | Trades | Return | Max DD | Win rate | Profit factor | Passed |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| > 0 vol points | 58 | -4.50% | 5.02% | 55.2% | 0.49 | No |
+| > 2 vol points | 47 | -2.42% | 4.32% | 61.7% | 0.63 | No |
+| > 5 vol points | 21 | -2.96% | 4.09% | 52.4% | 0.31 | No |
+
+No VRP candidate qualified. The workflow emitted `SELECTED_VRP=None`.
+
+Because neither the IV-percentile nor the VRP hypothesis passed SPY discovery, QQQ external
+holdout testing was deliberately not run. Testing an external market only after a failed discovery
+stage would amount to searching for a favorable result rather than validating a frozen hypothesis.
 
 ## Data-quality policy
 
@@ -161,17 +188,19 @@ the overall negative result.
 The current evidence does **not** support the frozen mechanical Iron Condor strategy as a
 positive-expectancy strategy.
 
-Four independent checks point in the same direction:
+Five independent checks point in the same direction:
 
 1. the 2020-2025 real-data baseline has profit factor 0.63 and negative return;
 2. all 12 predeclared parameter variations fail the 2016-2019 discovery gates;
 3. removing all modeled commission and slippage still produces a negative 2020-2025 result;
-4. no-lookahead high-IV percentile entry filters also fail, with profit factors below 0.50.
+4. no-lookahead high-IV percentile entry filters fail, with profit factors below 0.50;
+5. a no-lookahead IV-minus-realized-volatility premium filter also fails across all three
+   predeclared thresholds, with a best profit factor of only 0.63.
 
 The correct result of this research stage is therefore **strategy-family rejection**, not another
 round of unconstrained parameter optimization.
 
-Further work on CondorPilot should either test a materially different economic hypothesis with
-predeclared rules (for example an explicitly defined volatility-risk-premium model), or pivot
-away from the current mechanical Iron Condor strategy. It should not declare a production or
-paper-trading edge from the existing model.
+CondorPilot should not claim a paper-trading or production edge from this Iron Condor model.
+Further quantitative work should begin from a materially different strategy thesis rather than
+continue tuning Delta, wings, take-profit, stop-loss, IV percentile, or VRP thresholds against the
+same failed payoff structure.
