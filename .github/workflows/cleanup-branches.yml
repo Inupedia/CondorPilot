@@ -1,0 +1,27 @@
+name: Cleanup merged branches
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Delete all non-main branches
+        run: |
+          git push origin --delete \
+            feat/research-engine \
+            feat/research-engine-code \
+            feat/research-engine-final \
+            feat/research-engine-impl \
+            feat/research-engine-temp \
+            feat/research-engine-v2 \
+            feat/research-engine-work \
+            feat/thetadata-volatility-regimes
