@@ -33,3 +33,7 @@ jobs:
         run: >-
           condorpilot backtest-demo --spot 100 --days 30 --iv 0.25
           --strike-increment 5 --min-credit-to-width 0
+      - name: Smoke test research CLI
+        run: >-
+          condorpilot research --spot 100 --days 30 --iv 0.25 --dtes 30,45
+          --deltas 0.10,0.15 --exit-dtes 14 --min-credit-to-width 0 --top 3
