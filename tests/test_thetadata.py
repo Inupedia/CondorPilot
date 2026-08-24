@@ -3,7 +3,12 @@ from datetime import date
 import pytest
 
 from condorpilot.models import OptionType
-from condorpilot.vendors.thetadata import ThetaDataClient, ThetaDataConfig, normalize_greeks_payload
+from condorpilot.vendors.thetadata import (
+    ThetaDataClient,
+    ThetaDataConfig,
+    ThetaDataNoData,
+    normalize_greeks_payload,
+)
 
 
 def _row(
@@ -67,7 +72,7 @@ def _payload() -> list[dict[str, object]]:
     return rows
 
 
-def test_normalize_greeks_payload_keeps_latest_contract_rows() -> None:
+def test_normalize_greeks_payload_uses_one_latest_timestamp() -> None:
     snapshot = normalize_greeks_payload(_payload(), symbol="SPY")
 
     assert snapshot.as_of == date(2025, 1, 10)
@@ -81,6 +86,37 @@ def test_normalize_greeks_payload_keeps_latest_contract_rows() -> None:
         OptionType.PUT,
         OptionType.CALL,
     }
+
+
+def test_normalize_does_not_stitch_contracts_across_timestamps() -> None:
+    rows = _payload()
+    latest_time = "2025-01-10T16:00:00.000"
+    rows = [
+        row
+        for row in rows
+        if not (row["timestamp"] == latest_time and row["strike"] in {90.0, 110.0})
+    ]
+
+    snapshot = normalize_greeks_payload(
+        rows,
+        symbol="SPY",
+        config=ThetaDataConfig(minimum_quotes=4),
+    )
+
+    assert snapshot.observed_at.hour == 15
+    assert snapshot.spot == pytest.approx(100.0)
+    assert all(quote.bid == pytest.approx(1.0) for quote in snapshot.quotes)
+
+
+def test_normalize_rejects_when_no_timestamp_has_enough_quotes() -> None:
+    rows = _payload()[:3]
+
+    with pytest.raises(ThetaDataNoData, match="synchronized"):
+        normalize_greeks_payload(
+            rows,
+            symbol="SPY",
+            config=ThetaDataConfig(minimum_quotes=4),
+        )
 
 
 def test_client_requests_bulk_expirations_and_json() -> None:
