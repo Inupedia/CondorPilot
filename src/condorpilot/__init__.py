@@ -19,8 +19,10 @@ from condorpilot.evidence import (
     RegimeEvidence,
     ResearchVerdict,
     evidence_to_dict,
+    render_evidence_markdown,
     run_evidence,
     save_evidence_json,
+    save_evidence_markdown,
 )
 from condorpilot.execution import ExecutionConfig, ExecutionDataError
 from condorpilot.history import OptionChainSnapshot
@@ -102,13 +104,15 @@ __all__ = [
     "load_option_chain_csv",
     "load_vix_csv",
     "rank_runs",
+    "render_evidence_markdown",
     "run_backtest",
     "run_evidence",
     "run_parameter_sweep",
     "run_walk_forward",
     "save_evidence_json",
+    "save_evidence_markdown",
     "save_option_chain_csv",
     "summarize_result",
 ]
 
-__version__ = "0.8.0"
+__version__ = "0.8.1"
