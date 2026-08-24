@@ -184,8 +184,8 @@ class StrategyConfig:
             raise ValueError("max_bid_ask_spread_fraction must be non-negative")
         if not 0 < self.profit_target_fraction < 1:
             raise ValueError("profit_target_fraction must be between 0 and 1")
-        if self.stop_loss_credit_multiple <= 1:
-            raise ValueError("stop_loss_credit_multiple must be greater than 1")
+        if self.stop_loss_credit_multiple < 1:
+            raise ValueError("stop_loss_credit_multiple must be at least 1")
         if not 0 <= self.exit_dte < self.target_dte:
             raise ValueError("exit_dte must be between 0 and target_dte")
         if not 0 < self.max_risk_fraction <= 1:
