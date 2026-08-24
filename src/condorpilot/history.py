@@ -158,6 +158,7 @@ def build_synthetic_history(
                             bid=bid,
                             ask=ask,
                             delta=delta,
+                            implied_volatility=volatility,
                         )
                     )
 
