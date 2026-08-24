@@ -13,6 +13,17 @@ from condorpilot.diagnostics import (
     dataset_fingerprint,
     diagnose_dataset,
 )
+from condorpilot.evidence import (
+    EvidenceResult,
+    EvidenceThresholds,
+    EvidenceVerdict,
+    RegimePerformance,
+    evidence_to_dict,
+    render_evidence_json,
+    render_evidence_markdown,
+    run_evidence,
+    write_evidence_report,
+)
 from condorpilot.execution import ExecutionConfig, ExecutionDataError
 from condorpilot.history import OptionChainSnapshot
 from condorpilot.importers import CsvHistoryError, load_option_chain_csv, save_option_chain_csv
@@ -54,6 +65,9 @@ __all__ = [
     "DatasetDiagnostics",
     "DiagnosticThresholds",
     "EntryFilter",
+    "EvidenceResult",
+    "EvidenceThresholds",
+    "EvidenceVerdict",
     "ExecutionConfig",
     "ExecutionDataError",
     "ExitReason",
@@ -63,6 +77,7 @@ __all__ = [
     "OptionQuote",
     "OptionType",
     "ParameterGrid",
+    "RegimePerformance",
     "RegimeThresholds",
     "ResearchMetrics",
     "ResearchParameters",
@@ -84,15 +99,20 @@ __all__ = [
     "dataset_fingerprint",
     "diagnose_dataset",
     "estimate_atm_iv",
+    "evidence_to_dict",
     "fetch_cboe_vix_history",
     "load_option_chain_csv",
     "load_vix_csv",
     "rank_runs",
+    "render_evidence_json",
+    "render_evidence_markdown",
     "run_backtest",
+    "run_evidence",
     "run_parameter_sweep",
     "run_walk_forward",
     "save_option_chain_csv",
     "summarize_result",
+    "write_evidence_report",
 ]
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
