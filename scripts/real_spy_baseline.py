@@ -6,6 +6,12 @@ https://github.com/anahatsingh-ui/options-dataset-hist
 This script deliberately uses the existing CondorPilot strategy/execution/risk functions. It
 performs no parameter optimization. The fixed baseline is 45 DTE / 15 delta / 5-point wings /
 50% profit target / 2x close-debit stop / 21 DTE time exit / 2% max account risk.
+
+Entry quotes must be same-day and have usable Greeks. Held legs are valued from same-day
+bid/ask whenever available. If an exact held contract is absent for one trading observation,
+the immediately previous trading day's exact-contract bid/ask may be used once. That fallback
+is never allowed for entry, never looks forward, never spans two missing trading days, and every
+use is recorded in the result as a stale-mark event.
 """
 
 from __future__ import annotations
@@ -15,7 +21,7 @@ import json
 import math
 from collections import Counter
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import date
 from pathlib import Path
 
 import duckdb
@@ -76,8 +82,11 @@ def _option_type(value: str) -> OptionType:
     raise ValueError(f"unknown option type {value!r}")
 
 
-def _quote(row: tuple) -> OptionQuote:
+def _quote(row: tuple, *, fallback_delta: float | None = None) -> OptionQuote:
     expiration, strike, kind, bid, ask, delta, iv = row
+    delta_value = fallback_delta if delta is None else float(delta)
+    if delta_value is None or not math.isfinite(delta_value):
+        raise ValueError("option quote has no usable delta and no fallback delta")
     iv_value = None if iv is None or not math.isfinite(float(iv)) else float(iv)
     return OptionQuote(
         symbol="SPY",
@@ -86,7 +95,7 @@ def _quote(row: tuple) -> OptionQuote:
         option_type=_option_type(str(kind)),
         bid=float(bid),
         ask=float(ask),
-        delta=float(delta),
+        delta=delta_value,
         implied_volatility=iv_value,
     )
 
@@ -114,10 +123,9 @@ def _prepare_database(data_dir: Path, start: date, end: date) -> duckdb.DuckDBPy
         FROM read_parquet('{option_glob}')
         WHERE CAST(date AS DATE) BETWEEN ? AND ?
           AND date_diff('day', CAST(date AS DATE), CAST(expiration AS DATE)) BETWEEN 14 AND 55
-          AND bid IS NOT NULL AND ask IS NOT NULL AND delta IS NOT NULL
+          AND bid IS NOT NULL AND ask IS NOT NULL
           AND CAST(bid AS DOUBLE) >= 0
           AND CAST(ask AS DOUBLE) >= CAST(bid AS DOUBLE)
-          AND CAST(delta AS DOUBLE) BETWEEN -1 AND 1
           AND CAST(strike AS DOUBLE) > 0
         """,
         [start, end],
@@ -141,7 +149,11 @@ def _prepare_database(data_dir: Path, start: date, end: date) -> duckdb.DuckDBPy
     return con
 
 
-def _entry_chain(con: duckdb.DuckDBPyConnection, day: date, config: StrategyConfig) -> list[OptionQuote]:
+def _entry_chain(
+    con: duckdb.DuckDBPyConnection,
+    day: date,
+    config: StrategyConfig,
+) -> list[OptionQuote]:
     min_dte = config.target_dte - config.max_dte_deviation_days
     max_dte = config.target_dte + config.max_dte_deviation_days
     rows = con.execute(
@@ -150,6 +162,8 @@ def _entry_chain(con: duckdb.DuckDBPyConnection, day: date, config: StrategyConf
         FROM options
         WHERE quote_date = ?
           AND date_diff('day', quote_date, expiration) BETWEEN ? AND ?
+          AND delta IS NOT NULL
+          AND delta BETWEEN -1 AND 1
         ORDER BY expiration, strike, option_type
         """,
         [day, min_dte, max_dte],
@@ -157,37 +171,83 @@ def _entry_chain(con: duckdb.DuckDBPyConnection, day: date, config: StrategyConf
     return [_quote(row) for row in rows]
 
 
-def _mark_condor(
+def _held_leg_row(
     con: duckdb.DuckDBPyConnection,
+    *,
     day: date,
-    source: IronCondor,
-) -> IronCondor:
-    rows = con.execute(
+    expiration: date,
+    strike: float,
+    option_type: OptionType,
+) -> tuple | None:
+    return con.execute(
         """
         SELECT expiration, strike, option_type, bid, ask, delta, implied_volatility
         FROM options
-        WHERE quote_date = ? AND expiration = ?
-        ORDER BY strike, option_type
+        WHERE quote_date = ?
+          AND expiration = ?
+          AND strike = ?
+          AND option_type = ?
+        LIMIT 1
         """,
-        [day, source.expiration],
-    ).fetchall()
-    quotes = {_quote(row).option_type.value + f"|{float(row[1]):g}": _quote(row) for row in rows}
+        [day, expiration, strike, option_type.value],
+    ).fetchone()
 
-    def find(option_type: OptionType, strike: float) -> OptionQuote:
-        key = option_type.value + f"|{strike:g}"
-        if key not in quotes:
+
+def _mark_condor(
+    con: duckdb.DuckDBPyConnection,
+    day: date,
+    previous_trading_day: date | None,
+    source: IronCondor,
+) -> tuple[IronCondor, tuple[dict[str, object], ...]]:
+    stale_events: list[dict[str, object]] = []
+
+    def find(source_leg: OptionQuote) -> OptionQuote:
+        row = _held_leg_row(
+            con,
+            day=day,
+            expiration=source.expiration,
+            strike=source_leg.strike,
+            option_type=source_leg.option_type,
+        )
+        if row is not None:
+            return _quote(row, fallback_delta=source_leg.delta)
+
+        if previous_trading_day is None:
             raise RuntimeError(
                 f"missing held-leg quote on {day}: {source.symbol} {source.expiration} "
-                f"{strike:g} {option_type.value}"
+                f"{source_leg.strike:g} {source_leg.option_type.value}"
             )
-        return quotes[key]
+        previous = _held_leg_row(
+            con,
+            day=previous_trading_day,
+            expiration=source.expiration,
+            strike=source_leg.strike,
+            option_type=source_leg.option_type,
+        )
+        if previous is None:
+            raise RuntimeError(
+                "held-leg quote is missing for at least two consecutive trading observations: "
+                f"{source.symbol} {source.expiration} {source_leg.strike:g} "
+                f"{source_leg.option_type.value}; current={day}, prior={previous_trading_day}"
+            )
+        stale_events.append(
+            {
+                "mark_date": day.isoformat(),
+                "source_date": previous_trading_day.isoformat(),
+                "expiration": source.expiration.isoformat(),
+                "strike": source_leg.strike,
+                "option_type": source_leg.option_type.value,
+            }
+        )
+        return _quote(previous, fallback_delta=source_leg.delta)
 
-    return IronCondor(
-        long_put=find(OptionType.PUT, source.long_put.strike),
-        short_put=find(OptionType.PUT, source.short_put.strike),
-        short_call=find(OptionType.CALL, source.short_call.strike),
-        long_call=find(OptionType.CALL, source.long_call.strike),
+    marked = IronCondor(
+        long_put=find(source.long_put),
+        short_put=find(source.short_put),
+        short_call=find(source.short_call),
+        long_call=find(source.long_call),
     )
+    return marked, tuple(stale_events)
 
 
 def _marked_equity(
@@ -244,6 +304,7 @@ def _run(con: duckdb.DuckDBPyConnection, start: date, end: date) -> dict:
     position: Position | None = None
     trades: list[Trade] = []
     no_trade_reasons: Counter[str] = Counter()
+    stale_mark_events: list[dict[str, object]] = []
     equity_rows: list[tuple[date, float, bool]] = []
     entry_attempts = 0
     entry_embargo_days = (
@@ -257,10 +318,17 @@ def _run(con: duckdb.DuckDBPyConnection, start: date, end: date) -> dict:
         raise RuntimeError("underlying history is empty")
     final_day = underlying_rows[-1][0]
 
-    for day, spot_raw, _adjusted in underlying_rows:
+    for index, (day, spot_raw, _adjusted) in enumerate(underlying_rows):
         spot = float(spot_raw)
+        previous_trading_day = underlying_rows[index - 1][0] if index > 0 else None
         if position is not None:
-            marked = _mark_condor(con, day, position.condor)
+            marked, stale = _mark_condor(
+                con,
+                day,
+                previous_trading_day,
+                position.condor,
+            )
+            stale_mark_events.extend(stale)
             debit = close_debit(marked, execution)
             dte = (position.condor.expiration - day).days
             if dte < 0:
@@ -323,10 +391,7 @@ def _run(con: duckdb.DuckDBPyConnection, start: date, end: date) -> dict:
             no_trade_reasons["modeled execution credit below entry threshold"] += 1
             equity_rows.append((day, realized_equity, False))
             continue
-        max_loss = (
-            (condor.max_width - credit) * 100
-            + execution.commission(1) * 2
-        )
+        max_loss = (condor.max_width - credit) * 100 + execution.commission(1) * 2
         contracts = contracts_for_risk_budget(
             account_equity=realized_equity,
             max_loss_per_contract=max_loss,
@@ -356,7 +421,10 @@ def _run(con: duckdb.DuckDBPyConnection, start: date, end: date) -> dict:
     equities = [row[1] for row in equity_rows]
     final_equity = equities[-1]
     total_return = final_equity / initial_equity - 1
-    elapsed_years = max((underlying_rows[-1][0] - underlying_rows[0][0]).days / 365.25, 1e-9)
+    elapsed_years = max(
+        (underlying_rows[-1][0] - underlying_rows[0][0]).days / 365.25,
+        1e-9,
+    )
     cagr = (final_equity / initial_equity) ** (1 / elapsed_years) - 1
     winners = [trade for trade in trades if trade.net_pnl > 0]
     losses = [trade for trade in trades if trade.net_pnl < 0]
@@ -381,6 +449,7 @@ def _run(con: duckdb.DuckDBPyConnection, start: date, end: date) -> dict:
     first_adjusted = float(underlying_rows[0][2])
     last_adjusted = float(underlying_rows[-1][2])
     exposure = sum(1 for _, _, open_position in equity_rows if open_position) / len(equity_rows)
+    stale_days = {event["mark_date"] for event in stale_mark_events}
 
     return {
         "dataset": {
@@ -391,6 +460,10 @@ def _run(con: duckdb.DuckDBPyConnection, start: date, end: date) -> dict:
             "trading_days": len(underlying_rows),
             "filtered_option_rows": con.execute("SELECT count(*) FROM options").fetchone()[0],
             "snapshot": "end-of-day",
+            "held_mark_policy": "same-day exact quote; one prior-trading-day fallback only",
+            "stale_mark_leg_count": len(stale_mark_events),
+            "stale_mark_day_count": len(stale_days),
+            "stale_mark_events": stale_mark_events,
         },
         "strategy": {
             "target_dte": strategy.target_dte,
@@ -441,20 +514,20 @@ def _run(con: duckdb.DuckDBPyConnection, start: date, end: date) -> dict:
         },
         "trades": [
             {
-                "opened_on": t.opened_on.isoformat(),
-                "closed_on": t.closed_on.isoformat(),
-                "expiration": t.expiration.isoformat(),
-                "contracts": t.contracts,
-                "entry_spot": t.entry_spot,
-                "exit_spot": t.exit_spot,
-                "entry_credit": t.entry_credit,
-                "exit_debit": t.exit_debit,
-                "net_pnl": t.net_pnl,
-                "reason": t.reason,
-                "holding_days": t.holding_days,
-                "strikes": list(t.strikes),
+                "opened_on": trade.opened_on.isoformat(),
+                "closed_on": trade.closed_on.isoformat(),
+                "expiration": trade.expiration.isoformat(),
+                "contracts": trade.contracts,
+                "entry_spot": trade.entry_spot,
+                "exit_spot": trade.exit_spot,
+                "entry_credit": trade.entry_credit,
+                "exit_debit": trade.exit_debit,
+                "net_pnl": trade.net_pnl,
+                "reason": trade.reason,
+                "holding_days": trade.holding_days,
+                "strikes": list(trade.strikes),
             }
-            for t in trades
+            for trade in trades
         ],
     }
 
@@ -474,10 +547,15 @@ def main() -> int:
 
     perf = result["performance"]
     benchmarks = result["benchmarks"]
+    dataset = result["dataset"]
     print("=== REAL SPY 2020-2025 CONDORPILOT BASELINE ===")
-    print(f"Data: {result['dataset']['start']} -> {result['dataset']['end']}")
-    print(f"Trading days: {result['dataset']['trading_days']}")
-    print(f"Filtered option rows: {result['dataset']['filtered_option_rows']:,}")
+    print(f"Data: {dataset['start']} -> {dataset['end']}")
+    print(f"Trading days: {dataset['trading_days']}")
+    print(f"Filtered option rows: {dataset['filtered_option_rows']:,}")
+    print(
+        "Held-leg stale marks: "
+        f"{dataset['stale_mark_leg_count']} legs across {dataset['stale_mark_day_count']} days"
+    )
     print(f"Trades: {perf['trade_count']}")
     print(f"Final equity: ${perf['final_equity']:,.2f}")
     print(f"Net profit: ${perf['net_profit']:+,.2f}")
