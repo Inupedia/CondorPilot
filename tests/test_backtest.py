@@ -121,6 +121,34 @@ def test_missing_held_leg_fails_instead_of_interpolating_history() -> None:
         )
 
 
+def test_backtest_rejects_post_expiration_spot_as_settlement_price() -> None:
+    history = build_synthetic_history(
+        symbol="SPY",
+        start=START,
+        spots=[100.0] * 47,
+        volatility=0.25,
+        target_dte=45,
+        strike_increment=5.0,
+    )
+    sparse_history = (history[0], history[46])
+    strategy = StrategyConfig(
+        target_dte=45,
+        profit_target_fraction=0.999,
+        stop_loss_credit_multiple=100.0,
+        exit_dte=0,
+        min_credit_to_width=0.0,
+    )
+
+    with pytest.raises(BacktestDataError, match="crossed option expiration"):
+        run_backtest(
+            sparse_history,
+            config=BacktestConfig(
+                strategy=strategy,
+                execution=ExecutionConfig(slippage_fraction=0),
+            ),
+        )
+
+
 def test_result_reports_drawdown_and_win_rate() -> None:
     history = build_synthetic_history(
         symbol="SPY",
