@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from condorpilot.models import IronCondor, OptionQuote
 
 
+class ExecutionDataError(ValueError):
+    """Raised when quotes cannot produce a coherent executable mark."""
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionConfig:
     """Simple auditable fill model.
@@ -51,13 +55,21 @@ def entry_credit(condor: IronCondor, config: ExecutionConfig | None = None) -> f
 
 
 def close_debit(condor: IronCondor, config: ExecutionConfig | None = None) -> float:
-    """Return modeled closing debit per share for buying back the condor."""
+    """Return modeled closing debit per share for buying back the condor.
+
+    A negative debit indicates internally inconsistent leg quotes. Older versions clamped that
+    case to zero, which could fabricate a free close. Research now fails loudly instead.
+    """
     config = config or ExecutionConfig()
     slip = config.slippage_fraction
-    return max(
-        0.0,
+    debit = (
         _buy_fill(condor.short_put, slip)
         + _buy_fill(condor.short_call, slip)
         - _sell_fill(condor.long_put, slip)
-        - _sell_fill(condor.long_call, slip),
+        - _sell_fill(condor.long_call, slip)
     )
+    if debit < -1e-9:
+        raise ExecutionDataError(
+            f"modeled close debit is negative ({debit:.4f}); option quotes are inconsistent"
+        )
+    return max(0.0, debit)

@@ -3,7 +3,12 @@ from datetime import date
 import pytest
 
 from condorpilot.models import OptionType
-from condorpilot.vendors.thetadata import ThetaDataClient, ThetaDataConfig, normalize_greeks_payload
+from condorpilot.vendors.thetadata import (
+    ThetaDataClient,
+    ThetaDataConfig,
+    ThetaDataNoData,
+    normalize_greeks_payload,
+)
 
 
 def _row(
@@ -67,7 +72,7 @@ def _payload() -> list[dict[str, object]]:
     return rows
 
 
-def test_normalize_greeks_payload_keeps_latest_contract_rows() -> None:
+def test_normalize_greeks_payload_uses_one_latest_timestamp() -> None:
     snapshot = normalize_greeks_payload(_payload(), symbol="SPY")
 
     assert snapshot.as_of == date(2025, 1, 10)
@@ -83,13 +88,54 @@ def test_normalize_greeks_payload_keeps_latest_contract_rows() -> None:
     }
 
 
-def test_client_requests_bulk_expirations_and_json() -> None:
-    captured: dict[str, object] = {}
+def test_normalize_does_not_stitch_contracts_across_timestamps() -> None:
+    rows = _payload()
+    latest_time = "2025-01-10T16:00:00.000"
+    rows = [
+        row
+        for row in rows
+        if not (row["timestamp"] == latest_time and row["strike"] in {90.0, 110.0})
+    ]
+
+    snapshot = normalize_greeks_payload(
+        rows,
+        symbol="SPY",
+        config=ThetaDataConfig(minimum_quotes=4),
+    )
+
+    assert snapshot.observed_at.hour == 15
+    assert snapshot.spot == pytest.approx(100.0)
+    assert all(quote.bid == pytest.approx(1.0) for quote in snapshot.quotes)
+
+
+def test_normalize_rejects_when_no_timestamp_has_enough_quotes() -> None:
+    rows = _payload()[:3]
+
+    with pytest.raises(ThetaDataNoData, match="synchronized"):
+        normalize_greeks_payload(
+            rows,
+            symbol="SPY",
+            config=ThetaDataConfig(minimum_quotes=4),
+        )
+
+
+def test_client_uses_contract_discovery_then_concrete_expiration_greeks() -> None:
+    calls: list[tuple[str, dict[str, str]]] = []
 
     def requester(path: str, params) -> object:
-        captured["path"] = path
-        captured["params"] = dict(params)
-        return _payload()
+        calls.append((path, dict(params)))
+        if path == "option/list/contracts/quote":
+            return [
+                {
+                    "symbol": "SPY",
+                    "expiration": "2025-02-21",
+                    "strike": 100,
+                    "right": "call",
+                }
+            ]
+        if path == "option/history/greeks/all":
+            return _payload()
+        raise AssertionError(f"unexpected path {path}")
 
     client = ThetaDataClient(
         ThetaDataConfig(interval="30m", max_dte=75, strike_range=30),
@@ -98,11 +144,20 @@ def test_client_requests_bulk_expirations_and_json() -> None:
     snapshot = client.fetch_day("spy", date(2025, 1, 10))
 
     assert snapshot.symbol == "SPY"
-    assert captured["path"] == "option/history/greeks/all"
-    params = captured["params"]
-    assert isinstance(params, dict)
-    assert params["expiration"] == "*"
-    assert params["date"] == "2025-01-10"
-    assert params["format"] == "json"
-    assert params["max_dte"] == "75"
-    assert params["strike_range"] == "30"
+    assert len(calls) == 2
+
+    discovery_path, discovery = calls[0]
+    assert discovery_path == "option/list/contracts/quote"
+    assert discovery["date"] == "2025-01-10"
+    assert discovery["max_dte"] == "75"
+    assert discovery["format"] == "json"
+
+    greeks_path, greeks = calls[1]
+    assert greeks_path == "option/history/greeks/all"
+    assert greeks["expiration"] == "2025-02-21"
+    assert greeks["date"] == "2025-01-10"
+    assert greeks["right"] == "both"
+    assert greeks["interval"] == "30m"
+    assert greeks["strike_range"] == "30"
+    assert greeks["format"] == "json"
+    assert "max_dte" not in greeks

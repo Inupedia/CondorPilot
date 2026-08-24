@@ -25,8 +25,12 @@ def test_exit_policy_is_mechanical() -> None:
         is ExitAction.TAKE_PROFIT
     )
     assert (
-        evaluate_exit(entry_credit=1.00, current_close_debit=3.00, dte=35, config=config)
+        evaluate_exit(entry_credit=1.00, current_close_debit=2.00, dte=35, config=config)
         is ExitAction.STOP_LOSS
+    )
+    assert (
+        evaluate_exit(entry_credit=1.00, current_close_debit=1.99, dte=35, config=config)
+        is ExitAction.HOLD
     )
     assert (
         evaluate_exit(entry_credit=1.00, current_close_debit=1.00, dte=21, config=config)

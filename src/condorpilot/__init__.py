@@ -7,7 +7,7 @@ from condorpilot.backtest import (
     ExitReason,
     run_backtest,
 )
-from condorpilot.execution import ExecutionConfig
+from condorpilot.execution import ExecutionConfig, ExecutionDataError
 from condorpilot.history import OptionChainSnapshot
 from condorpilot.importers import CsvHistoryError, load_option_chain_csv, save_option_chain_csv
 from condorpilot.models import IronCondor, OptionQuote, OptionType, StrategyConfig
@@ -40,6 +40,7 @@ __all__ = [
     "CsvHistoryError",
     "EntryFilter",
     "ExecutionConfig",
+    "ExecutionDataError",
     "ExitReason",
     "IronCondor",
     "NoTradeError",
@@ -72,4 +73,4 @@ __all__ = [
     "summarize_result",
 ]
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

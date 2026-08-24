@@ -73,11 +73,7 @@ def _extract_rows(payload: object) -> list[Mapping[str, Any]]:
     else:
         raise ThetaDataError("ThetaData JSON response must be an array or object")
 
-    normalized: list[Mapping[str, Any]] = []
-    for row in rows:
-        if isinstance(row, Mapping):
-            normalized.append(row)
-    return normalized
+    return [row for row in rows if isinstance(row, Mapping)]
 
 
 def _parse_float(row: Mapping[str, Any], field: str) -> float | None:
@@ -137,16 +133,19 @@ def normalize_greeks_payload(
     symbol: str,
     config: ThetaDataConfig | None = None,
 ) -> OptionChainSnapshot:
-    """Normalize one ThetaData ``option/history/greeks/all`` response.
+    """Normalize combined ThetaData Greeks rows into one synchronized snapshot.
 
-    Bulk responses may contain several intervals per contract. CondorPilot keeps the latest
-    usable row for each contract and fails if the selected rows imply materially inconsistent
-    underlying prices.
+    Every contract in the snapshot must come from the exact same timestamp. The adapter chooses
+    the latest timestamp containing enough usable contracts and never stitches each contract's
+    individual latest row into a market state that did not exist.
     """
     config = config or ThetaDataConfig()
     timezone = ZoneInfo(config.market_timezone)
     rows = _extract_rows(payload)
-    latest: dict[tuple[date, float, OptionType], tuple[datetime, OptionQuote, float]] = {}
+    buckets: dict[
+        datetime,
+        dict[tuple[date, float, OptionType], tuple[OptionQuote, float]],
+    ] = {}
 
     for row in rows:
         expiration = _parse_expiration(row.get("expiration"))
@@ -195,34 +194,39 @@ def normalize_greeks_payload(
             delta=delta,
             implied_volatility=implied_vol,
         )
-        key = (expiration, strike, option_type)
-        existing = latest.get(key)
-        if existing is None or timestamp > existing[0]:
-            latest[key] = (timestamp, quote, underlying_price)
+        contract = (expiration, strike, option_type)
+        buckets.setdefault(timestamp, {})[contract] = (quote, underlying_price)
 
-    if len(latest) < config.minimum_quotes:
+    eligible_timestamps = [
+        timestamp
+        for timestamp, contracts in buckets.items()
+        if len(contracts) >= config.minimum_quotes
+    ]
+    if not eligible_timestamps:
+        maximum = max((len(contracts) for contracts in buckets.values()), default=0)
         raise ThetaDataNoData(
-            f"ThetaData returned only {len(latest)} usable quotes for {symbol}"
+            f"ThetaData returned at most {maximum} synchronized usable quotes for {symbol}"
         )
 
-    selected = tuple(latest.values())
-    spots = [item[2] for item in selected]
+    observed_at = max(eligible_timestamps)
+    selected = tuple(buckets[observed_at].values())
+    spots = [item[1] for item in selected]
     spot = statistics.median(spots)
     dispersion = (max(spots) - min(spots)) / spot
     if dispersion > config.spot_dispersion_fraction:
         raise ThetaDataError(
-            "ThetaData selected rows have excessive underlying-price dispersion: "
+            "ThetaData synchronized rows have excessive underlying-price dispersion: "
             f"{dispersion:.2%}"
         )
-    observed_at = max(item[0] for item in selected)
+
     quotes = tuple(
-        item[1]
+        item[0]
         for item in sorted(
             selected,
             key=lambda item: (
-                item[1].expiration,
-                item[1].strike,
-                item[1].option_type.value,
+                item[0].expiration,
+                item[0].strike,
+                item[0].option_type.value,
             ),
         )
     )
@@ -246,7 +250,7 @@ class ThetaDataClient:
         url = f"{self.config.base_url.rstrip('/')}/{path.lstrip('/')}?{query}"
         request = urllib.request.Request(
             url,
-            headers={"Accept": "application/json", "User-Agent": "CondorPilot/0.4"},
+            headers={"Accept": "application/json", "User-Agent": "CondorPilot/0.5"},
         )
         try:
             with urllib.request.urlopen(request, timeout=self.config.timeout) as response:
@@ -257,23 +261,58 @@ class ThetaDataClient:
                 f"{self.config.base_url}: {exc}"
             ) from exc
 
-    def fetch_day(self, symbol: str, observed_on: date) -> OptionChainSnapshot:
-        if not symbol.strip():
-            raise ValueError("symbol must not be empty")
-        params = {
-            "symbol": symbol.upper(),
-            "expiration": "*",
-            "date": observed_on.isoformat(),
-            "right": "both",
-            "interval": self.config.interval,
-            "start_time": self.config.start_time,
-            "end_time": self.config.end_time,
-            "max_dte": str(self.config.max_dte),
-            "strike_range": str(self.config.strike_range),
-            "format": "json",
+    def _expirations_for_day(self, symbol: str, observed_on: date) -> tuple[date, ...]:
+        """Use the documented contracts endpoint to discover quoted expirations for one day."""
+        payload = self._requester(
+            "option/list/contracts/quote",
+            {
+                "symbol": symbol,
+                "date": observed_on.isoformat(),
+                "max_dte": str(self.config.max_dte),
+                "format": "json",
+            },
+        )
+        expirations = {
+            expiration
+            for row in _extract_rows(payload)
+            if (expiration := _parse_expiration(row.get("expiration"))) is not None
+            and observed_on <= expiration <= observed_on + timedelta(days=self.config.max_dte)
         }
-        payload = self._requester("option/history/greeks/all", params)
-        return normalize_greeks_payload(payload, symbol=symbol.upper(), config=self.config)
+        if not expirations:
+            raise ThetaDataNoData(
+                f"ThetaData returned no quoted expirations for {symbol} on {observed_on}"
+            )
+        return tuple(sorted(expirations))
+
+    def fetch_day(self, symbol: str, observed_on: date) -> OptionChainSnapshot:
+        """Fetch one synchronized historical chain using documented v3 parameters only."""
+        symbol = symbol.strip().upper()
+        if not symbol:
+            raise ValueError("symbol must not be empty")
+
+        rows: list[Mapping[str, Any]] = []
+        for expiration in self._expirations_for_day(symbol, observed_on):
+            payload = self._requester(
+                "option/history/greeks/all",
+                {
+                    "symbol": symbol,
+                    "expiration": expiration.isoformat(),
+                    "date": observed_on.isoformat(),
+                    "right": "both",
+                    "interval": self.config.interval,
+                    "start_time": self.config.start_time,
+                    "end_time": self.config.end_time,
+                    "strike_range": str(self.config.strike_range),
+                    "format": "json",
+                },
+            )
+            rows.extend(_extract_rows(payload))
+
+        if not rows:
+            raise ThetaDataNoData(
+                f"ThetaData returned no Greeks rows for {symbol} on {observed_on}"
+            )
+        return normalize_greeks_payload(rows, symbol=symbol, config=self.config)
 
     def fetch_history(
         self,
@@ -283,11 +322,7 @@ class ThetaDataClient:
         end_date: date,
         skip_no_data: bool = True,
     ) -> tuple[OptionChainSnapshot, ...]:
-        """Fetch daily snapshots with single-day bulk requests.
-
-        Single-day requests avoid ThetaData's multi-day restrictions for bulk expirations.
-        Weekends/holidays can be skipped without hiding connectivity or schema errors.
-        """
+        """Fetch daily snapshots; market dates without usable data may be skipped."""
         if end_date < start_date:
             raise ValueError("end_date must not be before start_date")
         snapshots: list[OptionChainSnapshot] = []

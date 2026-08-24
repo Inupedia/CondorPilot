@@ -43,6 +43,13 @@ class OptionQuote:
     def mid(self) -> float:
         return (self.bid + self.ask) / 2.0
 
+    @property
+    def relative_spread(self) -> float:
+        """Bid/ask width divided by mid; infinity when the quote has no positive mid."""
+        if self.mid <= 0:
+            return math.inf
+        return (self.ask - self.bid) / self.mid
+
 
 @dataclass(frozen=True, slots=True)
 class IronCondor:
@@ -141,11 +148,21 @@ class IronCondor:
 
 @dataclass(frozen=True, slots=True)
 class StrategyConfig:
-    """Mechanical defaults for the initial CondorPilot strategy."""
+    """Mechanical defaults for the initial CondorPilot strategy.
+
+    Selection tolerances are hard research-integrity constraints. A sparse chain must produce
+    no trade rather than silently changing a 45-DTE / 15-delta experiment into another strategy.
+
+    ``stop_loss_credit_multiple`` is the close-debit threshold relative to entry credit. With
+    the default 2.0, a 1.00 credit stops when modeled close debit reaches 2.00 (a 1.00 loss).
+    """
 
     target_dte: int = 45
+    max_dte_deviation_days: int = 7
     short_delta: float = 0.15
+    max_delta_deviation: float = 0.05
     wing_width: float = 5.0
+    max_bid_ask_spread_fraction: float = 0.75
     profit_target_fraction: float = 0.50
     stop_loss_credit_multiple: float = 2.0
     exit_dte: int = 21
@@ -155,14 +172,20 @@ class StrategyConfig:
     def __post_init__(self) -> None:
         if self.target_dte <= 0:
             raise ValueError("target_dte must be positive")
+        if self.max_dte_deviation_days < 0:
+            raise ValueError("max_dte_deviation_days must be non-negative")
         if not 0 < self.short_delta < 0.5:
             raise ValueError("short_delta must be between 0 and 0.5")
+        if not 0 <= self.max_delta_deviation < 0.5:
+            raise ValueError("max_delta_deviation must be between 0 and 0.5")
         if self.wing_width <= 0:
             raise ValueError("wing_width must be positive")
+        if self.max_bid_ask_spread_fraction < 0:
+            raise ValueError("max_bid_ask_spread_fraction must be non-negative")
         if not 0 < self.profit_target_fraction < 1:
             raise ValueError("profit_target_fraction must be between 0 and 1")
-        if self.stop_loss_credit_multiple <= 0:
-            raise ValueError("stop_loss_credit_multiple must be positive")
+        if self.stop_loss_credit_multiple < 1:
+            raise ValueError("stop_loss_credit_multiple must be at least 1")
         if not 0 <= self.exit_dte < self.target_dte:
             raise ValueError("exit_dte must be between 0 and target_dte")
         if not 0 < self.max_risk_fraction <= 1:

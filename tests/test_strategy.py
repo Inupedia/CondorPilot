@@ -1,9 +1,9 @@
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
 from condorpilot.market import SyntheticChainSpec, build_synthetic_chain
-from condorpilot.models import StrategyConfig
+from condorpilot.models import OptionQuote, OptionType, StrategyConfig
 from condorpilot.strategy import NoTradeError, build_iron_condor
 
 AS_OF = date(2026, 8, 24)
@@ -16,8 +16,9 @@ def test_strategy_selects_target_delta_and_exact_wings() -> None:
             spot=100.0,
             dte=45,
             volatility=0.25,
-            strike_increment=5.0,
-            strikes_each_side=15,
+            strike_increment=1.0,
+            strikes_each_side=25,
+            bid_ask_spread=0.01,
         ),
         as_of=AS_OF,
     )
@@ -33,9 +34,44 @@ def test_strategy_selects_target_delta_and_exact_wings() -> None:
     assert (condor.expiration - AS_OF).days == 45
     assert condor.put_width == pytest.approx(5.0)
     assert condor.call_width == pytest.approx(5.0)
-    assert abs(abs(condor.short_put.delta) - 0.15) < 0.08
-    assert abs(abs(condor.short_call.delta) - 0.15) < 0.08
+    assert abs(abs(condor.short_put.delta) - 0.15) <= config.max_delta_deviation
+    assert abs(abs(condor.short_call.delta) - 0.15) <= config.max_delta_deviation
     assert condor.net_credit > 0
+
+
+def test_strategy_rejects_expiration_outside_dte_tolerance() -> None:
+    chain = build_synthetic_chain(
+        SyntheticChainSpec(
+            symbol="SPY",
+            spot=100.0,
+            dte=100,
+            volatility=0.25,
+            strike_increment=5.0,
+            strikes_each_side=15,
+        ),
+        as_of=AS_OF,
+    )
+
+    with pytest.raises(NoTradeError, match="DTE tolerance"):
+        build_iron_condor(chain, spot=100.0, as_of=AS_OF, config=StrategyConfig())
+
+
+def test_strategy_rejects_delta_outside_tolerance() -> None:
+    expiration = AS_OF + timedelta(days=45)
+    chain = [
+        OptionQuote("SPY", expiration, 90, OptionType.PUT, 0.45, 0.55, -0.30),
+        OptionQuote("SPY", expiration, 95, OptionType.PUT, 1.45, 1.55, -0.45),
+        OptionQuote("SPY", expiration, 105, OptionType.CALL, 1.45, 1.55, 0.45),
+        OptionQuote("SPY", expiration, 110, OptionType.CALL, 0.45, 0.55, 0.30),
+    ]
+
+    with pytest.raises(NoTradeError, match="delta"):
+        build_iron_condor(
+            chain,
+            spot=100.0,
+            as_of=AS_OF,
+            config=StrategyConfig(min_credit_to_width=0.0),
+        )
 
 
 def test_strategy_rejects_unattractive_credit() -> None:
@@ -45,8 +81,9 @@ def test_strategy_rejects_unattractive_credit() -> None:
             spot=100.0,
             dte=45,
             volatility=0.20,
-            strike_increment=5.0,
-            strikes_each_side=15,
+            strike_increment=1.0,
+            strikes_each_side=25,
+            bid_ask_spread=0.01,
         ),
         as_of=AS_OF,
     )

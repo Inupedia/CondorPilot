@@ -13,7 +13,7 @@ def test_entry_filter_only_controls_new_entries() -> None:
         spots=[100.0] * 25,
         volatility=0.25,
         target_dte=45,
-        strike_increment=5.0,
+        strike_increment=1.0,
     )
     strategy = StrategyConfig(
         target_dte=45,
@@ -49,7 +49,7 @@ def test_entry_filter_can_block_all_entries() -> None:
         spots=[100.0] * 5,
         volatility=0.25,
         target_dte=45,
-        strike_increment=5.0,
+        strike_increment=1.0,
     )
 
     result = run_backtest(history, entry_filter=lambda snapshot: False)

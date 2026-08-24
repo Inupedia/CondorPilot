@@ -222,8 +222,9 @@ def run_backtest(
     """Run a single-position event-driven backtest over timestamped option chains.
 
     ``entry_filter`` is evaluated only while flat. Held positions continue to be marked and
-    managed on every snapshot, even when that snapshot would reject a new entry. This makes
-    volatility/event regime filters safe to compose without corrupting position valuation.
+    managed on every snapshot, even when that snapshot would reject a new entry. Expiration
+    settlement requires a snapshot dated exactly on expiration; a later underlying price is
+    never substituted for a missing settlement date.
     """
     config = config or BacktestConfig()
     history = validate_history(snapshots)
@@ -237,7 +238,12 @@ def run_backtest(
 
         if position is not None:
             dte = (position.condor.expiration - snapshot.as_of).days
-            if dte <= 0:
+            if dte < 0:
+                raise BacktestDataError(
+                    "history crossed option expiration without an expiration-date snapshot: "
+                    f"expiration={position.condor.expiration}, next_snapshot={snapshot.as_of}"
+                )
+            if dte == 0:
                 exit_debit_value = _expiration_close_debit(position.condor, snapshot.spot)
                 exit_reason = ExitReason.EXPIRATION
             else:

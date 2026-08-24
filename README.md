@@ -1,24 +1,28 @@
 # CondorPilot
 
-**Systematic Iron Condor strategy engine for backtesting, research, risk management, and automated options trading.**
+**Research-preview Iron Condor engine for auditable backtesting, data validation, and strategy research.**
 
-CondorPilot turns a discretionary Iron Condor idea into an auditable mechanical workflow. The strategy core is broker-agnostic: adapters normalize option chains, the selector builds defined-risk condors, the execution model applies explicit fill assumptions, the event-driven backtester manages positions, and the research layer compares parameters and market regimes against the same historical data.
+> **Status: Research Preview — No-Go for live money.** CondorPilot is not a proven profitable trading system and currently has no broker execution or paper-trading safety layer. Passing tests means the software follows its rules; it does not prove the strategy has statistical edge.
 
-> CondorPilot is research software, not financial advice. Synthetic histories are deterministic fixtures for demos/tests. Serious strategy evaluation should use timestamped historical option-chain data from a reliable vendor.
+CondorPilot turns a discretionary Iron Condor idea into an explicit workflow: historical option data is normalized into synchronized snapshots, strategy rules select defined-risk spreads, execution assumptions model fills and fees, an event-driven backtester manages positions, and the research layer compares parameters and volatility regimes.
 
-## Strategy defaults
+Synthetic histories are deterministic fixtures for demos and tests only. They are not performance evidence.
 
-| Parameter | Default |
-| --- | ---: |
-| Target expiration | 45 DTE |
-| Short put delta | ~0.15 |
-| Short call delta | ~0.15 |
-| Wing width | 5 points |
-| Profit target | 50% of entry credit |
-| Stop loss | 2x entry-credit loss |
-| Time exit | 21 DTE |
-| Max account risk | 2% per position |
-| Minimum credit / width | 10% |
+## Baseline strategy
+
+| Parameter | Default | Integrity rule |
+| --- | ---: | --- |
+| Target expiration | 45 DTE | must be within ±7 days |
+| Short put/call delta | 0.15 absolute | must be within ±0.05 delta |
+| Wing width | 5 points | exact strike required |
+| Max bid/ask width | 75% of mid | otherwise no trade |
+| Profit target | 50% of entry credit | close when reached |
+| Stop | 2.0× entry credit close debit | `$1.00` credit stops at `$2.00` debit |
+| Time exit | 21 DTE | close before expiration |
+| Max account risk | 2% per position | based on defined max loss + fees |
+| Minimum credit / width | 10% | otherwise no trade |
+
+Sparse data must result in **no trade**, not a silently different strategy. A 45-DTE experiment is not allowed to become a 100-DTE trade, and a 15-delta experiment is not allowed to become a 45-delta trade simply because the chain is incomplete.
 
 ## Quick start
 
@@ -33,11 +37,23 @@ condorpilot research --days 90 --dtes 30,45,60 --deltas 0.10,0.15,0.20
 condorpilot regimes --days 90 --iv 0.25
 ```
 
-## ThetaData v3 historical adapter
+## Historical data integrity
 
-CondorPilot v0.4 includes a concrete adapter for a locally running [ThetaData v3](https://docs.thetadata.us/) terminal. The adapter uses the `option/history/greeks/all` endpoint because one normalized row contains the option bid/ask, delta, implied volatility, timestamp, and underlying price required by the research engine.
+Real research uses timestamped option-chain snapshots. CondorPilot deliberately fails when the supplied data cannot support a defensible mark.
 
-Start Theta Terminal v3, then import daily snapshots:
+Current rules:
+
+- every snapshot has a timezone-aware timestamp and one underlying spot;
+- held option legs must exist exactly in subsequent snapshots;
+- entry DTE and delta must remain inside configured tolerances;
+- excessively wide entry quotes are rejected;
+- a negative modeled close debit is treated as inconsistent data, never clamped into a free close;
+- expiration settlement requires a snapshot dated exactly on the option expiration date;
+- if history jumps from before expiration to after expiration, the backtest fails instead of using a later SPY/QQQ price as the settlement price.
+
+## ThetaData v3 adapter
+
+CondorPilot includes a dependency-free adapter for a locally running Theta Terminal v3. It requests historical option Greeks/quotes and normalizes bid/ask, delta, implied volatility, expiration, strike, timestamp, and underlying price.
 
 ```bash
 condorpilot import-thetadata \
@@ -56,72 +72,39 @@ Interval       30m
 Window         15:30:00 - 16:00:00 America/New_York
 Max DTE        90
 Strike range   40 strikes around spot
-Expiration     * (bulk expirations)
+Expiration     *
 ```
 
-The ThetaData Greeks endpoint requires the appropriate ThetaData subscription/data entitlement. CondorPilot deliberately issues one market-date request at a time for bulk expirations rather than relying on multi-day bulk behavior.
+### No stitched chains
 
-For each day, the adapter:
+All contracts in one normalized snapshot must come from the **same ThetaData timestamp**. CondorPilot selects the latest timestamp that contains enough usable contracts. It never takes each contract's individual latest row and combines 15:30 and 16:00 quotes into a synthetic chain that never existed in the market.
 
-1. keeps the latest usable row for every contract;
-2. normalizes call/put, expiration, strike, bid/ask, delta, and IV;
-3. computes a robust snapshot spot from ThetaData's underlying prices;
-4. rejects a snapshot when underlying-price dispersion exceeds the configured tolerance;
-5. skips market dates with no usable data but does not hide connection or schema errors.
-
-The HTTP transport is injectable, so CI and unit tests never require a live Theta Terminal.
+The adapter also checks dispersion in ThetaData's underlying price across rows at that timestamp. Market dates with no usable synchronized data can be skipped; connectivity and schema failures are not hidden.
 
 ## Volatility regimes
 
-CondorPilot can classify every option snapshot using two independent signals:
+CondorPilot can classify snapshots using Cboe VIX and ATM option IV.
 
-- **Cboe VIX close** from Cboe's official daily history;
-- **ATM option IV** estimated from the call and put nearest 0.50 absolute delta around the expiration closest to 30 DTE.
+Default labels:
 
-The rolling IV percentile and IV rank use only the current observation and preceding observations. They do not use future data.
-
-Default regimes:
-
-| Regime | Default trigger |
+| Regime | Trigger |
 | --- | --- |
-| `low` | VIX < 15 with non-elevated IV, or low IV percentile when VIX is unavailable |
-| `normal` | neither low, high, nor stress conditions |
+| `low` | VIX < 15 with non-elevated IV, or low IV percentile without VIX |
+| `normal` | neither low, high, nor stress |
 | `high` | VIX >= 25 or IV percentile >= 75% |
 | `stress` | VIX >= 35 or IV percentile >= 90% |
-| `unknown` | neither VIX nor option IV is available |
+| `unknown` | insufficient VIX and IV data |
 
-Inspect regimes using only IV already present in the option history:
-
-```bash
-condorpilot regimes \
-  --csv data/spy-thetadata.csv \
-  --iv-lookback 252 \
-  --tail 30
-```
-
-Add Cboe VIX history from a local file:
+Rolling IV percentile/rank uses only information available at or before the snapshot; it does not use future observations.
 
 ```bash
 condorpilot regimes \
   --csv data/spy-thetadata.csv \
-  --vix-csv data/VIX_History.csv
+  --fetch-cboe-vix \
+  --iv-lookback 252
 ```
 
-Or fetch the official public VIX history directly:
-
-```bash
-condorpilot regimes \
-  --csv data/spy-thetadata.csv \
-  --fetch-cboe-vix
-```
-
-Cboe source: `https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv`
-
-## Regime-aware research
-
-Regime filtering is an **entry filter**, not a data filter. A position opened on an allowed day continues to be marked and managed on every subsequent snapshot even when the current regime would reject a new entry.
-
-Example: compare parameter combinations while opening new positions only in normal and high-volatility regimes:
+Regimes can gate **new entries** without removing marks for existing positions:
 
 ```bash
 condorpilot research \
@@ -135,20 +118,14 @@ condorpilot research \
   --stop-multiples 1,2,3 \
   --exit-dtes 7,14,21 \
   --risk-fractions 0.005,0.01,0.02 \
-  --rank-by sortino \
-  --top 20
+  --rank-by sortino
 ```
 
-This is the path for testing questions such as:
+`--stop-multiples` means **modeled close debit divided by original entry credit**. For example, `2` means a position sold for `$1.20` stops at approximately `$2.40`, before commissions and slippage effects.
 
-- Does 45 DTE / 15 delta perform better when IV is elevated?
-- Should low-volatility entries be skipped because premium is too small?
-- Does stress-regime premium compensate for the larger tail risk?
-- Does the best parameter set remain robust when slippage and commissions are included?
+## Research metrics
 
-## Research engine
-
-Every parameter case is evaluated against the same immutable option history and execution assumptions. The research engine reports:
+Every parameter case reuses the same validated history and execution assumptions. Results include:
 
 - total return and CAGR;
 - maximum drawdown;
@@ -158,125 +135,55 @@ Every parameter case is evaluated against the same immutable option history and 
 - capital exposure;
 - trade count.
 
-The default ranking metric is Sortino so a high win rate does not automatically outrank a strategy with better downside-adjusted returns.
+A high win rate is not treated as proof of safety. Iron Condor is a short-volatility strategy: many small wins can still be dominated by infrequent large losses.
 
 ## Historical CSV schema
 
-Real research uses one row per option quote. Rows sharing the same `observed_at` timestamp form one complete option-chain snapshot.
+Each row is one option quote; rows sharing `observed_at` form one snapshot.
 
 ```csv
 observed_at,symbol,spot,expiration,strike,option_type,bid,ask,delta,implied_volatility
 2025-01-02T16:00:00-05:00,SPY,590.20,2025-02-14,550,put,1.25,1.31,-0.102,0.248
-2025-01-02T16:00:00-05:00,SPY,590.20,2025-02-14,555,put,1.55,1.62,-0.121,0.241
 ```
 
-Required columns remain:
+Required columns:
 
 `observed_at, symbol, spot, expiration, strike, option_type, bid, ask, delta`
 
-`implied_volatility` is optional for backward compatibility with v0.3 data. It is required only for IV-based regime analysis when VIX is not otherwise sufficient.
+`implied_volatility` is optional for backward compatibility.
 
-`observed_at` must include a timezone. The importer rejects duplicate contracts and inconsistent symbol/spot values within a snapshot. Held option legs must exist exactly in subsequent snapshots; CondorPilot does not silently interpolate missing history.
+## What CondorPilot does not model yet
 
-## Backtesting model
+These limitations are material and are why the project remains **No-Go for live money**:
 
-CondorPilot does not infer historical option prices from SPY or QQQ candles.
-
-```text
-Vendor / normalized CSV
-          |
-          v
- OptionChainSnapshot[]
-          |
-          +--------------------+
-          |                    |
-          v                    v
- volatility regime       parameter grid
- VIX + IV pct/rank        DTE/delta/etc.
-          |                    |
-          v                    |
-     entry filter              |
-          |                    |
-          +---------+----------+
-                    v
-             strategy selector
-                    |
-                    v
-                IronCondor
-                    |
-             execution + risk
-                    |
-                    v
-          event-driven backtester
-                    |
-                    v
-         trades + equity + metrics
-```
-
-Important assumptions are explicit and configurable:
-
-- **Timestamped chains.** Every snapshot has a timezone-aware timestamp, spot, and normalized option quotes.
-- **Strict held-leg matching.** Missing held legs cause a data error instead of a fabricated quote.
-- **Slippage.** `0.0` means midpoint fills; `1.0` means natural bid/ask fills. Default is `0.25`.
-- **Commissions.** Default is `$0.65` per option contract per leg on both entry and exit.
-- **Risk sizing.** Contracts are sized from modeled credit, maximum loss, fees, equity, and risk fraction.
-- **Mark-to-liquidation equity.** Open equity includes modeled close cost and estimated exit commissions.
-- **No orphan positions.** A still-open position at the final snapshot is liquidated with `end_of_data`.
-- **Entry filters do not remove market data.** Regime/event gates are checked only before a new position opens.
+- no partial fills or legging risk;
+- no order rejection/replace state machine;
+- no network or broker latency model;
+- no early assignment model for American-style ETF options;
+- no broker reconciliation or restart recovery;
+- no account-level portfolio exposure limits;
+- no kill switch;
+- no validated paper-trading adapter;
+- no walk-forward or frozen-parameter out-of-sample framework yet.
 
 ## Package layout
 
 ```text
 src/condorpilot/
-├── backtest.py          # event loop, positions, entry filters, equity curve
-├── execution.py         # fill model, slippage, commissions
-├── history.py           # timestamped chains + synthetic history
+├── backtest.py          # event loop, positions, settlement integrity
+├── execution.py         # fill assumptions and quote-consistency checks
+├── history.py           # timestamped chains + synthetic fixtures
 ├── importers.py         # normalized CSV import/export
-├── market.py            # provider boundary + single-chain synthetic demo
-├── models.py            # option quotes, IV, condor, strategy config
-├── pricing.py           # dependency-free Black-Scholes demo helper
-├── research.py          # parameter grids, metrics, sweep/ranking engine
-├── risk.py              # sizing and exit policy
-├── strategy.py          # mechanical strike selection
-├── volatility.py        # VIX, ATM IV, IV percentile/rank, regimes
+├── market.py            # provider boundary
+├── models.py            # quotes, condor, strategy invariants
+├── pricing.py           # Black-Scholes demo helper
+├── research.py          # parameter grids and metrics
+├── risk.py              # sizing and explicit exit semantics
+├── strategy.py          # DTE/delta/liquidity-constrained selection
+├── volatility.py        # VIX / IV regimes
 ├── vendors/
-│   └── thetadata.py     # ThetaData v3 historical options adapter
-└── cli.py               # demo, backtest, research, regimes, imports
-```
-
-## Python API
-
-```python
-from condorpilot import (
-    BacktestConfig,
-    ParameterGrid,
-    VolatilityRegime,
-    build_regime_entry_filter,
-    build_volatility_regimes,
-    rank_runs,
-    run_parameter_sweep,
-)
-
-regimes = build_volatility_regimes(historical_snapshots, vix_history=vix_history)
-entry_filter = build_regime_entry_filter(
-    regimes,
-    allowed_regimes=(VolatilityRegime.NORMAL, VolatilityRegime.HIGH),
-)
-
-runs = run_parameter_sweep(
-    historical_snapshots,
-    grid=ParameterGrid(
-        target_dte=(30, 45, 60),
-        short_delta=(0.10, 0.15, 0.20),
-        profit_target_fraction=(0.25, 0.50, 0.75),
-        exit_dte=(14, 21),
-    ),
-    base_config=BacktestConfig(initial_equity=50_000),
-    entry_filter=entry_filter,
-)
-
-for run in rank_runs(runs, metric="sortino")[:10]:
-    print(run.parameters, run.metrics)
+│   └── thetadata.py     # synchronized ThetaData v3 snapshots
+└── cli.py
 ```
 
 ## Development
@@ -287,32 +194,31 @@ pytest
 condorpilot demo --spot 100 --iv 0.25 --min-credit-to-width 0
 condorpilot backtest-demo --spot 100 --days 30 --iv 0.25 --min-credit-to-width 0
 condorpilot research --spot 100 --days 30 --dtes 30,45 --deltas 0.10,0.15 \
-  --exit-dtes 14 --min-credit-to-width 0 --allowed-regimes normal --top 3
-condorpilot regimes --spot 100 --days 10 --iv 0.25 --tail 3
+  --exit-dtes 14 --min-credit-to-width 0 --top 3
 ```
 
-GitHub Actions runs linting, unit tests, strategy/backtest smoke tests, a regime-aware parameter sweep, and a volatility-regime smoke test on Python 3.11, 3.12, and 3.13.
+CI runs linting, unit tests, and CLI smoke tests on Python 3.11, 3.12, and 3.13.
 
-## Roadmap
+## Roadmap / hard gates
 
-1. ✅ **Strategy core** — deterministic selection, payoff, risk, tests.
-2. ✅ **Historical data contract** — timestamped option-chain snapshots and strict validation.
-3. ✅ **Event-driven backtester** — fills, slippage, commissions, exits, portfolio accounting.
-4. ✅ **Historical data import** — normalized CSV schema with strict validation and round-trip export.
-5. ✅ **Research layer** — parameter sweeps and risk-adjusted metrics/ranking.
-6. ✅ **ThetaData adapter** — concrete v3 historical option-chain ingestion.
-7. ✅ **Volatility regimes** — Cboe VIX + ATM IV percentile/rank and regime-aware entries.
-8. **Dataset diagnostics** — coverage, missing contracts, stale quotes, spread/liquidity reports.
-9. **Paper trading adapter** — broker integration behind provider/execution boundaries.
-10. **Live safeguards** — reconciliation, idempotent orders, kill switch, exposure limits, audit trail.
-11. **Dashboard/API** — candidates, positions, P/L attribution, experiments, and live status.
+1. ✅ Strategy core and defined-risk payoff model.
+2. ✅ Event-driven backtester with fees/slippage.
+3. ✅ Historical CSV and ThetaData ingestion.
+4. ✅ VIX / IV regime research.
+5. ✅ Research-integrity hardening: strict DTE/delta identity, synchronized vendor snapshots, explicit stop semantics, exact expiration settlement, inconsistent-quote failure.
+6. **Dataset diagnostics:** stale quotes, liquidity/spreads, missing contracts, calendar/expiration coverage, provenance reports.
+7. **Walk-forward / out-of-sample:** frozen parameters, rolling train/test windows, benchmark comparisons.
+8. **Paper trading:** broker adapter, order state machine, partial fills, reconciliation, restart recovery, account risk and kill switch.
+9. Only after those gates: evaluate whether any live deployment is justified.
 
 ## Design principles
 
-- **Defined risk first.** Every supported strategy exposes bounded maximum loss before an order is considered.
-- **Same data for every experiment.** Parameter comparisons reuse one validated history and one execution model.
-- **No hidden broker coupling.** Strategy logic consumes normalized domain objects, not vendor payloads.
-- **No fake backtests.** Real research uses timestamped option-chain data and explicit fill assumptions.
-- **No look-ahead regime labels.** Rolling IV features use only observations available up to that snapshot.
-- **Fail on missing held-leg data.** Silent interpolation can materially bias options results.
-- **Paper before live.** Live execution waits for reconciliation and independently testable risk controls.
+- **Research evidence before automation.**
+- **No silent strategy drift.**
+- **No stitched market snapshots.**
+- **No fake settlement prices.**
+- **No fabricated free fills.**
+- **No look-ahead regime labels.**
+- **Paper before live.**
+
+CondorPilot is research software, not financial advice.

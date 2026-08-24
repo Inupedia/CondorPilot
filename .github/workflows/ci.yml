@@ -28,17 +28,17 @@ jobs:
       - name: Test
         run: pytest
       - name: Smoke test strategy CLI
-        run: condorpilot demo --spot 100 --iv 0.25 --strike-increment 5 --min-credit-to-width 0
+        run: condorpilot demo --spot 100 --iv 0.25 --strike-increment 1 --min-credit-to-width 0
       - name: Smoke test backtester CLI
         run: >-
           condorpilot backtest-demo --spot 100 --days 30 --iv 0.25
-          --strike-increment 5 --min-credit-to-width 0
+          --strike-increment 1 --min-credit-to-width 0
       - name: Smoke test research CLI
         run: >-
-          condorpilot research --spot 100 --days 30 --iv 0.25 --dtes 30,45
-          --deltas 0.10,0.15 --exit-dtes 14 --min-credit-to-width 0 --top 3
+          condorpilot research --spot 100 --days 30 --iv 0.25 --strike-increment 1
+          --dtes 30,45 --deltas 0.10,0.15 --exit-dtes 14 --min-credit-to-width 0 --top 3
           --allowed-regimes normal --iv-lookback 10
       - name: Smoke test volatility regimes CLI
         run: >-
           condorpilot regimes --spot 100 --days 10 --iv 0.25
-          --strike-increment 5 --iv-lookback 10 --tail 3
+          --strike-increment 1 --iv-lookback 10 --tail 3
