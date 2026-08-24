@@ -45,6 +45,26 @@ jobs:
             --start 2020-01-02 \
             --end 2025-12-16 \
             --output /tmp/real-spy-baseline.json
+      - name: Inspect first real-data continuity failure
+        if: failure()
+        run: |
+          python - <<'PY'
+          import duckdb
+
+          con = duckdb.connect()
+          rows = con.execute(
+              """
+              SELECT contract_id, date, expiration, strike, type, last, mark,
+                     bid, ask, volume, open_interest, implied_volatility, delta
+              FROM read_parquet('/tmp/spy-real/options_2020.parquet')
+              WHERE CAST(date AS DATE) = DATE '2020-06-23'
+                AND CAST(expiration AS DATE) = DATE '2020-07-24'
+                AND CAST(strike AS DOUBLE) = 280
+                AND lower(CAST(type AS VARCHAR)) = 'put'
+              """
+          ).fetchall()
+          print('RAW_HELD_LEG_ROWS=', rows)
+          PY
       - name: Show result JSON
         if: always()
         run: |
