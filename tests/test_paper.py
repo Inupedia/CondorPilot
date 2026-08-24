@@ -40,7 +40,11 @@ class FakeBroker:
 
     def submit_order(self, intent: PaperOrderIntent) -> BrokerOrderSnapshot:
         self.submit_calls += 1
-        snapshot = self.submit_snapshot or _snapshot("broker-1", OrderStatus.WORKING, intent)
+        snapshot = self.submit_snapshot or _snapshot(
+            "broker-1",
+            OrderStatus.WORKING,
+            intent,
+        )
         self.orders[snapshot.broker_order_id] = snapshot
         return snapshot
 
@@ -61,7 +65,12 @@ class FakeBroker:
         return cancelled
 
 
-def _intent(*, key: str = "entry-2026-01-05", quantity: int = 1, max_loss: float = 400) -> PaperOrderIntent:
+def _intent(
+    *,
+    key: str = "entry-2026-01-05",
+    quantity: int = 1,
+    max_loss: float = 400,
+) -> PaperOrderIntent:
     expiration = date(2026, 2, 20)
     return PaperOrderIntent(
         idempotency_key=key,
@@ -273,5 +282,7 @@ def test_unknown_broker_open_order_trips_kill_switch() -> None:
 
     report = engine.reconcile_open_orders()
 
-    assert any(issue.code == "unknown_broker_order" for issue in report.issues)
+    assert any(
+        issue.code == "unknown_broker_order" for issue in report.issues
+    )
     assert store.load().kill_switch.active
