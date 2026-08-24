@@ -7,7 +7,13 @@ from collections import Counter
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
-from condorpilot.backtest import BacktestConfig, BacktestResult, EntryFilter, ExitReason, run_backtest
+from condorpilot.backtest import (
+    BacktestConfig,
+    BacktestResult,
+    EntryFilter,
+    ExitReason,
+    run_backtest,
+)
 from condorpilot.diagnostics import DatasetDiagnostics, DiagnosticThresholds, diagnose_dataset
 from condorpilot.history import OptionChainSnapshot, validate_history
 from condorpilot.models import StrategyConfig
