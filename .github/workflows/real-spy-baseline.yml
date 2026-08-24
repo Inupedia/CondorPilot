@@ -6,6 +6,7 @@ on:
       - scripts/real_spy_baseline.py
       - scripts/real_spy_sensitivity.py
       - scripts/real_spy_iv_regime.py
+      - scripts/real_spy_vrp.py
       - .github/workflows/real-spy-baseline.yml
   workflow_dispatch:
 
@@ -15,7 +16,7 @@ permissions:
 jobs:
   real-spy-validation:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -57,6 +58,11 @@ jobs:
           PYTHONPATH=. python scripts/real_spy_iv_regime.py \
             --data-dir /tmp/spy-real \
             --output /tmp/real-spy-iv-regime.json
+      - name: Run no-lookahead volatility risk premium validation
+        run: |
+          PYTHONPATH=. python scripts/real_spy_vrp.py \
+            --data-dir /tmp/spy-real \
+            --output /tmp/real-spy-vrp.json
       - name: Show compact research result
         if: always()
         run: |
@@ -68,6 +74,7 @@ jobs:
               Path('/tmp/real-spy-baseline.json'),
               Path('/tmp/real-spy-sensitivity.json'),
               Path('/tmp/real-spy-iv-regime.json'),
+              Path('/tmp/real-spy-vrp.json'),
           ):
               if not path.exists():
                   continue
@@ -94,4 +101,5 @@ jobs:
             /tmp/real-spy-baseline.json
             /tmp/real-spy-sensitivity.json
             /tmp/real-spy-iv-regime.json
+            /tmp/real-spy-vrp.json
           if-no-files-found: warn
