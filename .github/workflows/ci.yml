@@ -42,6 +42,8 @@ jobs:
         run: >-
           condorpilot regimes --spot 100 --days 10 --iv 0.25
           --strike-increment 1 --iv-lookback 10 --tail 3
+      - name: Smoke test evidence CLI surface
+        run: condorpilot evidence --help
       - name: Smoke test dataset diagnostics API
         run: |
           python - <<'PY'
@@ -121,4 +123,94 @@ jobs:
           )
           assert len(result.folds) >= 1
           assert len(result.dataset.fingerprint) == 64
+          PY
+      - name: Smoke test evidence API
+        run: |
+          python - <<'PY'
+          from datetime import UTC, datetime
+          from condorpilot import (
+              BacktestConfig,
+              DiagnosticThresholds,
+              EvidenceThresholds,
+              ParameterGrid,
+              StrategyConfig,
+              WalkForwardConfig,
+              run_evidence,
+          )
+          from condorpilot.execution import ExecutionConfig
+          from condorpilot.history import build_synthetic_history
+
+          history = build_synthetic_history(
+              symbol="SPY",
+              start=datetime(2026, 1, 5, 21, 0, tzinfo=UTC),
+              spots=[100 + i * 0.08 for i in range(60)],
+              volatility=0.25,
+              target_dte=10,
+              expiration_interval_days=7,
+              strike_increment=1,
+              spread=0.02,
+          )
+          base = BacktestConfig(
+              strategy=StrategyConfig(
+                  target_dte=10,
+                  max_dte_deviation_days=4,
+                  short_delta=0.15,
+                  max_delta_deviation=0.08,
+                  wing_width=5,
+                  max_bid_ask_spread_fraction=1,
+                  exit_dte=3,
+                  min_credit_to_width=0,
+              ),
+              execution=ExecutionConfig(
+                  slippage_fraction=0,
+                  commission_per_contract_per_leg=0,
+              ),
+          )
+          grid = ParameterGrid(
+              target_dte=(10,),
+              short_delta=(0.10, 0.15),
+              wing_width=(5.0,),
+              profit_target_fraction=(0.50,),
+              stop_loss_credit_multiple=(2.0,),
+              exit_dte=(3,),
+              max_risk_fraction=(0.01,),
+          )
+          diagnostics = DiagnosticThresholds(
+              minimum_weekday_coverage=0,
+              maximum_weekend_fraction=1,
+              maximum_missing_iv_fraction=1,
+              maximum_wide_quote_fraction=1,
+              minimum_contract_continuity=0,
+              minimum_dte_coverage=0,
+              minimum_delta_coverage=0,
+              minimum_wing_coverage=0,
+              minimum_executable_coverage=0,
+          )
+          evidence = EvidenceThresholds(
+              minimum_oos_folds=1,
+              minimum_oos_trades=1,
+              minimum_tested_snapshot_fraction=0,
+              minimum_known_regime_trade_fraction=0,
+              minimum_selection_stability=0,
+              minimum_oos_total_return=-10,
+              maximum_oos_drawdown=1,
+              minimum_profitable_fold_fraction=0,
+          )
+          result = run_evidence(
+              history,
+              grid=grid,
+              base_config=base,
+              walk_forward_config=WalkForwardConfig(
+                  train_size=30,
+                  test_size=15,
+                  step_size=15,
+                  min_train_trades=1,
+              ),
+              diagnostic_thresholds=diagnostics,
+              evidence_thresholds=evidence,
+              iv_lookback=20,
+              target_iv_dte=10,
+          )
+          assert len(result.experiment_fingerprint) == 64
+          assert result.live_trading_approved is False
           PY

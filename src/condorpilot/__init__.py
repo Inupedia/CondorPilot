@@ -13,6 +13,15 @@ from condorpilot.diagnostics import (
     dataset_fingerprint,
     diagnose_dataset,
 )
+from condorpilot.evidence import (
+    EvidenceResult,
+    EvidenceThresholds,
+    RegimeEvidence,
+    ResearchVerdict,
+    evidence_to_dict,
+    run_evidence,
+    save_evidence_json,
+)
 from condorpilot.execution import ExecutionConfig, ExecutionDataError
 from condorpilot.history import OptionChainSnapshot
 from condorpilot.importers import CsvHistoryError, load_option_chain_csv, save_option_chain_csv
@@ -54,6 +63,8 @@ __all__ = [
     "DatasetDiagnostics",
     "DiagnosticThresholds",
     "EntryFilter",
+    "EvidenceResult",
+    "EvidenceThresholds",
     "ExecutionConfig",
     "ExecutionDataError",
     "ExitReason",
@@ -63,10 +74,12 @@ __all__ = [
     "OptionQuote",
     "OptionType",
     "ParameterGrid",
+    "RegimeEvidence",
     "RegimeThresholds",
     "ResearchMetrics",
     "ResearchParameters",
     "ResearchRun",
+    "ResearchVerdict",
     "StrategyConfig",
     "ThetaDataClient",
     "ThetaDataConfig",
@@ -84,15 +97,18 @@ __all__ = [
     "dataset_fingerprint",
     "diagnose_dataset",
     "estimate_atm_iv",
+    "evidence_to_dict",
     "fetch_cboe_vix_history",
     "load_option_chain_csv",
     "load_vix_csv",
     "rank_runs",
     "run_backtest",
+    "run_evidence",
     "run_parameter_sweep",
     "run_walk_forward",
+    "save_evidence_json",
     "save_option_chain_csv",
     "summarize_result",
 ]
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
