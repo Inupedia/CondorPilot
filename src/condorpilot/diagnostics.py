@@ -365,13 +365,19 @@ def diagnose_dataset(
             f"contract continuity {continuity:.1%} < {thresholds.minimum_contract_continuity:.1%}"
         )
     if dte_coverage < thresholds.minimum_dte_coverage:
-        issues.append(f"target-DTE coverage {dte_coverage:.1%} < {thresholds.minimum_dte_coverage:.1%}")
+        issues.append(
+            f"target-DTE coverage {dte_coverage:.1%} < "
+            f"{thresholds.minimum_dte_coverage:.1%}"
+        )
     if delta_coverage < thresholds.minimum_delta_coverage:
         issues.append(
             f"target-delta coverage {delta_coverage:.1%} < {thresholds.minimum_delta_coverage:.1%}"
         )
     if wing_coverage < thresholds.minimum_wing_coverage:
-        issues.append(f"exact-wing coverage {wing_coverage:.1%} < {thresholds.minimum_wing_coverage:.1%}")
+        issues.append(
+            f"exact-wing coverage {wing_coverage:.1%} < "
+            f"{thresholds.minimum_wing_coverage:.1%}"
+        )
     if executable_coverage < thresholds.minimum_executable_coverage:
         issues.append(
             f"executable-condor coverage {executable_coverage:.1%} < "
