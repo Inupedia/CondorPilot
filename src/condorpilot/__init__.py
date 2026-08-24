@@ -7,6 +7,12 @@ from condorpilot.backtest import (
     ExitReason,
     run_backtest,
 )
+from condorpilot.diagnostics import (
+    DatasetDiagnostics,
+    DiagnosticThresholds,
+    dataset_fingerprint,
+    diagnose_dataset,
+)
 from condorpilot.execution import ExecutionConfig, ExecutionDataError
 from condorpilot.history import OptionChainSnapshot
 from condorpilot.importers import CsvHistoryError, load_option_chain_csv, save_option_chain_csv
@@ -38,6 +44,8 @@ __all__ = [
     "BacktestConfig",
     "BacktestResult",
     "CsvHistoryError",
+    "DatasetDiagnostics",
+    "DiagnosticThresholds",
     "EntryFilter",
     "ExecutionConfig",
     "ExecutionDataError",
@@ -62,6 +70,8 @@ __all__ = [
     "build_iron_condor",
     "build_regime_entry_filter",
     "build_volatility_regimes",
+    "dataset_fingerprint",
+    "diagnose_dataset",
     "estimate_atm_iv",
     "fetch_cboe_vix_history",
     "load_option_chain_csv",
@@ -73,4 +83,4 @@ __all__ = [
     "summarize_result",
 ]
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
