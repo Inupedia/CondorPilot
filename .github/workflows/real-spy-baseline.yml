@@ -48,7 +48,7 @@ jobs:
             --output /tmp/real-spy-baseline.json
       - name: Run predeclared sensitivity and temporal validation
         run: |
-          python scripts/real_spy_sensitivity.py \
+          PYTHONPATH=. python scripts/real_spy_sensitivity.py \
             --data-dir /tmp/spy-real \
             --output /tmp/real-spy-sensitivity.json
       - name: Show compact research result
