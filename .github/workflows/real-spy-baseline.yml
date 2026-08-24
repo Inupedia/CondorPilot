@@ -57,13 +57,14 @@ jobs:
               SELECT contract_id, date, expiration, strike, type, last, mark,
                      bid, ask, volume, open_interest, implied_volatility, delta
               FROM read_parquet('/tmp/spy-real/options_2020.parquet')
-              WHERE CAST(date AS DATE) = DATE '2020-06-23'
+              WHERE CAST(date AS DATE) BETWEEN DATE '2020-06-18' AND DATE '2020-06-26'
                 AND CAST(expiration AS DATE) = DATE '2020-07-24'
                 AND CAST(strike AS DOUBLE) = 280
                 AND lower(CAST(type AS VARCHAR)) = 'put'
+              ORDER BY date
               """
           ).fetchall()
-          print('RAW_HELD_LEG_ROWS=', rows)
+          print('SURROUNDING_HELD_LEG_ROWS=', rows)
           PY
       - name: Show result JSON
         if: always()
