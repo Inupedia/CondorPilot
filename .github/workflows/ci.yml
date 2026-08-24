@@ -42,3 +42,25 @@ jobs:
         run: >-
           condorpilot regimes --spot 100 --days 10 --iv 0.25
           --strike-increment 1 --iv-lookback 10 --tail 3
+      - name: Smoke test dataset diagnostics API
+        run: |
+          python - <<'PY'
+          from datetime import UTC, datetime
+          from condorpilot import diagnose_dataset
+          from condorpilot.history import build_synthetic_history
+
+          history = build_synthetic_history(
+              symbol="SPY",
+              start=datetime(2026, 1, 5, 21, 0, tzinfo=UTC),
+              spots=[100 + i * 0.05 for i in range(10)],
+              volatility=0.25,
+              target_dte=45,
+              expiration_interval_days=7,
+              strike_increment=1,
+              spread=0.02,
+          )
+          report = diagnose_dataset(history)
+          assert len(report.fingerprint) == 64
+          assert report.dte_coverage > 0
+          assert report.executable_coverage > 0
+          PY
