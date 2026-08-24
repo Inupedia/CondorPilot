@@ -7,6 +7,12 @@ import math
 from datetime import UTC, date, datetime
 
 from condorpilot.backtest import BacktestConfig, run_backtest
+from condorpilot.evidence import (
+    EvidenceThresholds,
+    EvidenceVerdict,
+    run_evidence,
+    write_evidence_report,
+)
 from condorpilot.execution import ExecutionConfig
 from condorpilot.history import OptionChainSnapshot, build_synthetic_history
 from condorpilot.importers import load_option_chain_csv, save_option_chain_csv
@@ -15,6 +21,7 @@ from condorpilot.models import StrategyConfig
 from condorpilot.research import ParameterGrid, rank_runs, run_parameter_sweep
 from condorpilot.risk import contracts_for_risk_budget
 from condorpilot.strategy import NoTradeError, build_iron_condor
+from condorpilot.validation import WalkForwardConfig
 from condorpilot.vendors.thetadata import ThetaDataClient, ThetaDataConfig
 from condorpilot.volatility import (
     VolatilityRegime,
@@ -318,6 +325,85 @@ def _import_thetadata(args: argparse.Namespace) -> int:
     return 0
 
 
+def _evidence(args: argparse.Namespace) -> int:
+    history = load_option_chain_csv(args.csv)
+    grid = ParameterGrid(
+        target_dte=args.dtes,
+        short_delta=args.deltas,
+        wing_width=args.wing_widths,
+        profit_target_fraction=args.profit_targets,
+        stop_loss_credit_multiple=args.stop_multiples,
+        exit_dte=args.exit_dtes,
+        max_risk_fraction=args.risk_fractions,
+    )
+    base = BacktestConfig(
+        initial_equity=args.account_equity,
+        strategy=StrategyConfig(
+            max_dte_deviation_days=args.max_dte_deviation_days,
+            max_delta_deviation=args.max_delta_deviation,
+            max_bid_ask_spread_fraction=args.max_bid_ask_spread_fraction,
+            min_credit_to_width=args.min_credit_to_width,
+        ),
+        execution=ExecutionConfig(
+            slippage_fraction=args.slippage,
+            commission_per_contract_per_leg=args.commission,
+        ),
+    )
+    walk = WalkForwardConfig(
+        train_size=args.train_size,
+        test_size=args.test_size,
+        step_size=args.step_size,
+        anchored=args.anchored,
+        rank_by=args.rank_by,
+        min_train_trades=args.min_train_trades,
+    )
+    thresholds = EvidenceThresholds(
+        minimum_oos_folds=args.minimum_oos_folds,
+        minimum_oos_trades=args.minimum_oos_trades,
+        minimum_tested_fraction=args.minimum_tested_fraction,
+        minimum_positive_fold_fraction=args.minimum_positive_fold_fraction,
+        minimum_profit_factor=args.minimum_profit_factor,
+        maximum_oos_drawdown=args.maximum_oos_drawdown,
+        minimum_oos_total_return=args.minimum_oos_total_return,
+    )
+    result = run_evidence(
+        history,
+        source=args.csv,
+        expected_symbol=args.symbol,
+        vix_history=_load_vix(args),
+        grid=grid,
+        base_config=base,
+        walk_forward_config=walk,
+        evidence_thresholds=thresholds,
+        iv_lookback=args.iv_lookback,
+        target_iv_dte=args.target_iv_dte,
+    )
+    json_path, markdown_path = write_evidence_report(result, args.output_dir)
+    print(
+        f"CondorPilot evidence | {result.symbol} | verdict={result.verdict.value} | "
+        f"live_ready=no | fingerprint={result.dataset.fingerprint[:12]}"
+    )
+    if result.walk_forward is not None:
+        print(
+            f"OOS folds={len(result.walk_forward.folds)} "
+            f"trades={result.walk_forward.oos_trade_count} "
+            f"return={result.walk_forward.oos_total_return:+.2%} "
+            f"maxdd={result.walk_forward.oos_max_drawdown:.2%} "
+            f"buy_hold={result.walk_forward.buy_hold_total_return:+.2%}"
+        )
+    for reason in result.reasons:
+        print(f"- {reason}")
+    print(f"JSON: {json_path}")
+    print(f"Markdown: {markdown_path}")
+
+    return {
+        EvidenceVerdict.RESEARCH_PASS: 0,
+        EvidenceVerdict.RESEARCH_REJECT: 3,
+        EvidenceVerdict.INSUFFICIENT_EVIDENCE: 4,
+        EvidenceVerdict.DATA_FAIL: 5,
+    }[result.verdict]
+
+
 def _add_synthetic_market_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--symbol", default="SPY")
     parser.add_argument("--spot", type=float, default=650.0)
@@ -338,6 +424,32 @@ def _add_regime_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--iv-lookback", type=int, default=252)
     parser.add_argument("--target-iv-dte", type=int, default=30)
+
+
+def _add_grid_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--dtes", type=_int_list, default=(30, 45, 60))
+    parser.add_argument("--deltas", type=_float_list, default=(0.10, 0.15, 0.20))
+    parser.add_argument("--wing-widths", type=_float_list, default=(5.0,))
+    parser.add_argument("--profit-targets", type=_float_list, default=(0.50,))
+    parser.add_argument("--stop-multiples", type=_float_list, default=(2.0,))
+    parser.add_argument("--exit-dtes", type=_int_list, default=(14, 21))
+    parser.add_argument("--risk-fractions", type=_float_list, default=(0.01,))
+
+
+def _add_rank_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--rank-by",
+        choices=(
+            "sortino",
+            "sharpe",
+            "cagr",
+            "total_return",
+            "win_rate",
+            "profit_factor",
+            "average_trade",
+        ),
+        default="sortino",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -385,32 +497,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_synthetic_market_args(research)
     _add_regime_args(research)
+    _add_grid_args(research)
     research.add_argument("--csv", help="Long-form historical option-chain CSV")
-    research.add_argument("--dtes", type=_int_list, default=(30, 45, 60))
-    research.add_argument("--deltas", type=_float_list, default=(0.10, 0.15, 0.20))
-    research.add_argument("--wing-widths", type=_float_list, default=(5.0,))
-    research.add_argument("--profit-targets", type=_float_list, default=(0.50,))
-    research.add_argument("--stop-multiples", type=_float_list, default=(2.0,))
-    research.add_argument("--exit-dtes", type=_int_list, default=(14, 21))
-    research.add_argument("--risk-fractions", type=_float_list, default=(0.01,))
     research.add_argument("--allowed-regimes", type=_regime_list)
     research.add_argument("--min-credit-to-width", type=float, default=0.10)
     research.add_argument("--account-equity", type=float, default=50_000.0)
     research.add_argument("--slippage", type=float, default=0.25)
     research.add_argument("--commission", type=float, default=0.65)
-    research.add_argument(
-        "--rank-by",
-        choices=(
-            "sortino",
-            "sharpe",
-            "cagr",
-            "total_return",
-            "win_rate",
-            "profit_factor",
-            "average_trade",
-        ),
-        default="sortino",
-    )
+    _add_rank_arg(research)
     research.add_argument("--top", type=int, default=10)
     research.set_defaults(handler=_research)
 
@@ -439,6 +533,37 @@ def build_parser() -> argparse.ArgumentParser:
     theta.add_argument("--max-dte", type=int, default=90)
     theta.add_argument("--strike-range", type=int, default=40)
     theta.set_defaults(handler=_import_thetadata)
+
+    evidence = subparsers.add_parser(
+        "evidence",
+        help="Run the strict real-CSV research evidence gate and write JSON/Markdown reports",
+    )
+    evidence.add_argument("--csv", required=True, help="Real normalized option-chain CSV")
+    evidence.add_argument("--output-dir", default="evidence/spy")
+    evidence.add_argument("--symbol", default="SPY")
+    _add_regime_args(evidence)
+    _add_grid_args(evidence)
+    _add_rank_arg(evidence)
+    evidence.add_argument("--train-size", type=int, default=504)
+    evidence.add_argument("--test-size", type=int, default=126)
+    evidence.add_argument("--step-size", type=int, default=126)
+    evidence.add_argument("--anchored", action="store_true")
+    evidence.add_argument("--min-train-trades", type=int, default=5)
+    evidence.add_argument("--max-dte-deviation-days", type=int, default=7)
+    evidence.add_argument("--max-delta-deviation", type=float, default=0.05)
+    evidence.add_argument("--max-bid-ask-spread-fraction", type=float, default=0.75)
+    evidence.add_argument("--min-credit-to-width", type=float, default=0.10)
+    evidence.add_argument("--account-equity", type=float, default=50_000.0)
+    evidence.add_argument("--slippage", type=float, default=0.25)
+    evidence.add_argument("--commission", type=float, default=0.65)
+    evidence.add_argument("--minimum-oos-folds", type=int, default=4)
+    evidence.add_argument("--minimum-oos-trades", type=int, default=20)
+    evidence.add_argument("--minimum-tested-fraction", type=float, default=0.20)
+    evidence.add_argument("--minimum-positive-fold-fraction", type=float, default=0.50)
+    evidence.add_argument("--minimum-profit-factor", type=float, default=1.0)
+    evidence.add_argument("--maximum-oos-drawdown", type=float, default=0.25)
+    evidence.add_argument("--minimum-oos-total-return", type=float, default=0.0)
+    evidence.set_defaults(handler=_evidence)
     return parser
 
 
