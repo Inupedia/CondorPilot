@@ -284,7 +284,7 @@ def run_evidence(
 
 
 def evidence_to_dict(result: EvidenceResult) -> dict:
-    """Serialize the durable evidence summary without embedding every backtest quote/equity point."""
+    """Serialize the durable evidence summary without full backtest internals."""
     return {
         "experiment_fingerprint": result.experiment_fingerprint,
         "dataset_fingerprint": result.walk_forward.dataset.fingerprint,
