@@ -5,6 +5,7 @@ on:
     paths:
       - scripts/real_spy_baseline.py
       - scripts/real_spy_sensitivity.py
+      - scripts/real_spy_iv_regime.py
       - .github/workflows/real-spy-baseline.yml
   workflow_dispatch:
 
@@ -14,7 +15,7 @@ permissions:
 jobs:
   real-spy-validation:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,7 +29,7 @@ jobs:
       - name: Download real SPY option history
         run: |
           mkdir -p /tmp/spy-real
-          for year in 2016 2017 2018 2019 2020 2021 2022 2023 2024 2025; do
+          for year in 2015 2016 2017 2018 2019 2020 2021 2022 2023 2024 2025; do
             echo "Downloading SPY options ${year}"
             curl -L --fail --retry 4 --retry-delay 2 \
               -o "/tmp/spy-real/options_${year}.parquet" \
@@ -51,6 +52,11 @@ jobs:
           PYTHONPATH=. python scripts/real_spy_sensitivity.py \
             --data-dir /tmp/spy-real \
             --output /tmp/real-spy-sensitivity.json
+      - name: Run no-lookahead IV regime validation
+        run: |
+          PYTHONPATH=. python scripts/real_spy_iv_regime.py \
+            --data-dir /tmp/spy-real \
+            --output /tmp/real-spy-iv-regime.json
       - name: Show compact research result
         if: always()
         run: |
@@ -61,6 +67,7 @@ jobs:
           for path in (
               Path('/tmp/real-spy-baseline.json'),
               Path('/tmp/real-spy-sensitivity.json'),
+              Path('/tmp/real-spy-iv-regime.json'),
           ):
               if not path.exists():
                   continue
@@ -86,4 +93,5 @@ jobs:
           path: |
             /tmp/real-spy-baseline.json
             /tmp/real-spy-sensitivity.json
+            /tmp/real-spy-iv-regime.json
           if-no-files-found: warn
