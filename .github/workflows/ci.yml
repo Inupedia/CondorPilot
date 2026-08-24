@@ -277,3 +277,37 @@ jobs:
           assert len(result.experiment_fingerprint) == 64
           assert result.live_trading_approved is False
           PY
+      - name: Smoke test paper trading safety core
+        run: |
+          python - <<'PY'
+          from datetime import date
+
+          from condorpilot import (
+              AccountSnapshot,
+              ComboLeg,
+              NetPriceEffect,
+              OptionContract,
+              OptionType,
+              OrderSide,
+              PaperOrderIntent,
+              evaluate_order_risk,
+          )
+
+          expiration = date(2026, 10, 16)
+          intent = PaperOrderIntent(
+              idempotency_key="ci-paper-order",
+              legs=(
+                  ComboLeg(OptionContract("SPY", expiration, 590, OptionType.PUT), OrderSide.BUY),
+                  ComboLeg(OptionContract("SPY", expiration, 595, OptionType.PUT), OrderSide.SELL),
+                  ComboLeg(OptionContract("SPY", expiration, 690, OptionType.CALL), OrderSide.SELL),
+                  ComboLeg(OptionContract("SPY", expiration, 695, OptionType.CALL), OrderSide.BUY),
+              ),
+              quantity=1,
+              limit_price=1.0,
+              price_effect=NetPriceEffect.CREDIT,
+              max_loss_per_combo=400,
+          )
+          decision = evaluate_order_risk(intent, AccountSnapshot(equity=50_000))
+          assert decision.allowed
+          assert len(intent.fingerprint) == 64
+          PY
