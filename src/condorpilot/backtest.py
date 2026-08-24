@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 
 from condorpilot.execution import ExecutionConfig, close_debit, entry_credit
@@ -41,7 +41,7 @@ class TradeRecord:
     symbol: str
     opened_at: datetime
     closed_at: datetime
-    expiration: object
+    expiration: date
     contracts: int
     long_put_strike: float
     short_put_strike: float
