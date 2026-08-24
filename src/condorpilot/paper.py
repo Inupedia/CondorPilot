@@ -85,7 +85,10 @@ class OptionContract:
 
     @property
     def key(self) -> str:
-        return f"{self.symbol.upper()}|{self.expiration}|{self.strike:g}|{self.option_type.value}"
+        return (
+            f"{self.symbol.upper()}|{self.expiration}|"
+            f"{self.strike:g}|{self.option_type.value}"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,13 +202,17 @@ class ManagedOrder:
     @property
     def has_legging_exposure(self) -> bool:
         """True when legs have not filled in equal combo proportions."""
-        fill_by_key = {fill.contract_key: fill.filled_quantity for fill in self.leg_fills}
+        fill_by_key = {
+            fill.contract_key: fill.filled_quantity for fill in self.leg_fills
+        }
         progress: list[float] = []
         for leg in self.intent.legs:
             expected = self.intent.quantity * leg.ratio
             actual = fill_by_key.get(leg.contract.key, 0)
             progress.append(actual / expected)
-        return bool(progress) and not all(math.isclose(item, progress[0]) for item in progress)
+        return bool(progress) and not all(
+            math.isclose(item, progress[0]) for item in progress
+        )
 
 
 _ALLOWED_TRANSITIONS = {
@@ -248,22 +255,36 @@ _ALLOWED_TRANSITIONS = {
 
 
 def _validate_snapshot(order: ManagedOrder, snapshot: BrokerOrderSnapshot) -> None:
-    if order.broker_order_id is not None and snapshot.broker_order_id != order.broker_order_id:
+    if (
+        order.broker_order_id is not None
+        and snapshot.broker_order_id != order.broker_order_id
+    ):
         raise ReconciliationError("broker order id changed during reconciliation")
     expected = {
-        leg.contract.key: order.intent.quantity * leg.ratio for leg in order.intent.legs
+        leg.contract.key: order.intent.quantity * leg.ratio
+        for leg in order.intent.legs
     }
     seen: set[str] = set()
-    previous = {item.contract_key: item.filled_quantity for item in order.leg_fills}
+    previous = {
+        item.contract_key: item.filled_quantity for item in order.leg_fills
+    }
     for fill in snapshot.leg_fills:
         if fill.contract_key not in expected:
-            raise ReconciliationError(f"broker returned unknown contract {fill.contract_key}")
+            raise ReconciliationError(
+                f"broker returned unknown contract {fill.contract_key}"
+            )
         if fill.contract_key in seen:
-            raise ReconciliationError(f"broker returned duplicate fill {fill.contract_key}")
+            raise ReconciliationError(
+                f"broker returned duplicate fill {fill.contract_key}"
+            )
         if fill.filled_quantity > expected[fill.contract_key]:
-            raise ReconciliationError(f"fill exceeds requested quantity for {fill.contract_key}")
+            raise ReconciliationError(
+                f"fill exceeds requested quantity for {fill.contract_key}"
+            )
         if fill.filled_quantity < previous.get(fill.contract_key, 0):
-            raise ReconciliationError(f"fill quantity moved backwards for {fill.contract_key}")
+            raise ReconciliationError(
+                f"fill quantity moved backwards for {fill.contract_key}"
+            )
         seen.add(fill.contract_key)
 
 
@@ -280,6 +301,9 @@ def apply_broker_snapshot(
             f"invalid order transition {order.status.value} -> {snapshot.status.value}"
         )
     now = observed_at or datetime.now(UTC)
+    failure_reason = None
+    if snapshot.status in {OrderStatus.REJECTED, OrderStatus.ERROR}:
+        failure_reason = snapshot.message
     return replace(
         order,
         status=snapshot.status,
@@ -287,7 +311,7 @@ def apply_broker_snapshot(
         broker_order_id=snapshot.broker_order_id,
         leg_fills=snapshot.leg_fills,
         average_net_price=snapshot.average_net_price,
-        failure_reason=snapshot.message if snapshot.status in {OrderStatus.REJECTED, OrderStatus.ERROR} else None,
+        failure_reason=failure_reason,
     )
 
 
@@ -313,7 +337,11 @@ class AccountSnapshot:
 
     def risk_for(self, symbol: str) -> float:
         wanted = symbol.upper()
-        return sum(risk for item, risk in self.symbol_defined_risk if item.upper() == wanted)
+        return sum(
+            risk
+            for item, risk in self.symbol_defined_risk
+            if item.upper() == wanted
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,7 +363,12 @@ class AccountRiskLimits:
         )
         if any(not 0 < item <= 1 for item in fractions):
             raise ValueError("risk fractions must be within (0, 1]")
-        if min(self.max_open_positions, self.max_working_orders, self.max_contracts_per_order) <= 0:
+        count_limits = (
+            self.max_open_positions,
+            self.max_working_orders,
+            self.max_contracts_per_order,
+        )
+        if min(count_limits) <= 0:
             raise ValueError("risk count limits must be positive")
 
 
@@ -355,11 +388,14 @@ def evaluate_order_risk(
     order_risk = intent.maximum_order_risk
     if order_risk > account.equity * limits.max_order_risk_fraction:
         reasons.append("order defined risk exceeds per-order account limit")
-    if account.total_defined_risk + order_risk > account.equity * limits.max_total_defined_risk_fraction:
+    projected_total = account.total_defined_risk + order_risk
+    if projected_total > account.equity * limits.max_total_defined_risk_fraction:
         reasons.append("aggregate defined risk exceeds account limit")
-    if account.risk_for(intent.symbol) + order_risk > account.equity * limits.max_symbol_defined_risk_fraction:
+    projected_symbol = account.risk_for(intent.symbol) + order_risk
+    if projected_symbol > account.equity * limits.max_symbol_defined_risk_fraction:
         reasons.append("underlying concentration exceeds symbol risk limit")
-    if account.daily_realized_pnl <= -(account.equity * limits.max_daily_loss_fraction):
+    daily_loss_limit = account.equity * limits.max_daily_loss_fraction
+    if account.daily_realized_pnl <= -daily_loss_limit:
         reasons.append("daily realized loss limit reached")
     if account.open_position_count >= limits.max_open_positions:
         reasons.append("maximum open position count reached")
@@ -397,10 +433,24 @@ class PaperState:
     kill_switch: KillSwitchState = KillSwitchState()
 
     def by_key(self, key: str) -> ManagedOrder | None:
-        return next((order for order in self.orders if order.intent.idempotency_key == key), None)
+        return next(
+            (
+                order
+                for order in self.orders
+                if order.intent.idempotency_key == key
+            ),
+            None,
+        )
 
     def by_broker_id(self, broker_order_id: str) -> ManagedOrder | None:
-        return next((order for order in self.orders if order.broker_order_id == broker_order_id), None)
+        return next(
+            (
+                order
+                for order in self.orders
+                if order.broker_order_id == broker_order_id
+            ),
+            None,
+        )
 
 
 class PaperStateStore(Protocol):
@@ -457,7 +507,9 @@ def _state_to_dict(state: PaperState) -> dict:
             "active": state.kill_switch.active,
             "reason": state.kill_switch.reason,
             "tripped_at": (
-                state.kill_switch.tripped_at.isoformat() if state.kill_switch.tripped_at else None
+                state.kill_switch.tripped_at.isoformat()
+                if state.kill_switch.tripped_at
+                else None
             ),
         },
     }
@@ -497,7 +549,9 @@ def _state_from_dict(payload: dict) -> PaperState:
                 created_at=datetime.fromisoformat(raw["created_at"]),
                 updated_at=datetime.fromisoformat(raw["updated_at"]),
                 broker_order_id=raw.get("broker_order_id"),
-                leg_fills=tuple(LegFill(**item) for item in raw.get("leg_fills", [])),
+                leg_fills=tuple(
+                    LegFill(**item) for item in raw.get("leg_fills", [])
+                ),
                 average_net_price=raw.get("average_net_price"),
                 failure_reason=raw.get("failure_reason"),
             )
@@ -509,13 +563,15 @@ def _state_from_dict(payload: dict) -> PaperState:
         kill_switch=KillSwitchState(
             active=bool(kill.get("active", False)),
             reason=kill.get("reason"),
-            tripped_at=datetime.fromisoformat(tripped_at) if tripped_at else None,
+            tripped_at=(
+                datetime.fromisoformat(tripped_at) if tripped_at else None
+            ),
         ),
     )
 
 
 class JsonFilePaperStateStore:
-    """Small atomic JSON journal for restart recovery in a single-process paper service."""
+    """Atomic JSON journal for restart recovery in a single-process service."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -523,13 +579,20 @@ class JsonFilePaperStateStore:
     def load(self) -> PaperState:
         if not self.path.exists():
             return PaperState()
-        return _state_from_dict(json.loads(self.path.read_text(encoding="utf-8")))
+        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        return _state_from_dict(payload)
 
     def save(self, state: PaperState) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         temporary.write_text(
-            json.dumps(_state_to_dict(state), indent=2, sort_keys=True, allow_nan=False) + "\n",
+            json.dumps(
+                _state_to_dict(state),
+                indent=2,
+                sort_keys=True,
+                allow_nan=False,
+            )
+            + "\n",
             encoding="utf-8",
         )
         os.replace(temporary, self.path)
@@ -566,9 +629,15 @@ class PaperTradingEngine:
         self.store = store
         self.risk_limits = risk_limits or AccountRiskLimits()
 
-    def _replace_order(self, state: PaperState, updated: ManagedOrder) -> PaperState:
+    def _replace_order(
+        self,
+        state: PaperState,
+        updated: ManagedOrder,
+    ) -> PaperState:
         orders = tuple(
-            updated if item.intent.idempotency_key == updated.intent.idempotency_key else item
+            updated
+            if item.intent.idempotency_key == updated.intent.idempotency_key
+            else item
             for item in state.orders
         )
         return replace(state, orders=orders)
@@ -601,10 +670,13 @@ class PaperTradingEngine:
         existing = state.by_key(intent.idempotency_key)
         if existing is not None:
             if existing.intent.fingerprint != intent.fingerprint:
-                raise IdempotencyConflict("idempotency key reused for a different order")
+                raise IdempotencyConflict(
+                    "idempotency key reused for a different order"
+                )
             return existing
 
-        decision = evaluate_order_risk(intent, self.broker.account_snapshot(), self.risk_limits)
+        account = self.broker.account_snapshot()
+        decision = evaluate_order_risk(intent, account, self.risk_limits)
         if not decision.allowed:
             raise SafetyHalt("; ".join(decision.reasons))
 
@@ -618,7 +690,11 @@ class PaperTradingEngine:
         state = replace(state, orders=(*state.orders, order))
         self.store.save(state)
 
-        submitting = replace(order, status=OrderStatus.SUBMITTING, updated_at=datetime.now(UTC))
+        submitting = replace(
+            order,
+            status=OrderStatus.SUBMITTING,
+            updated_at=datetime.now(UTC),
+        )
         state = self._replace_order(state, submitting)
         self.store.save(state)
         try:
@@ -632,13 +708,16 @@ class PaperTradingEngine:
                 failure_reason=str(exc),
             )
             self.store.save(self._replace_order(state, failed))
-            self.trip_kill_switch(f"broker submission failure for {intent.idempotency_key}: {exc}")
+            self.trip_kill_switch(
+                f"broker submission failure for {intent.idempotency_key}: {exc}"
+            )
             raise
 
         self.store.save(self._replace_order(state, updated))
         if updated.has_legging_exposure:
             self.trip_kill_switch(
-                f"uneven multi-leg fill detected for broker order {updated.broker_order_id}"
+                "uneven multi-leg fill detected for broker order "
+                f"{updated.broker_order_id}"
             )
         return updated
 
@@ -651,13 +730,18 @@ class PaperTradingEngine:
             return order
         snapshot = self.broker.get_order(order.broker_order_id)
         if snapshot is None:
-            self.trip_kill_switch(f"broker lost non-terminal order {order.broker_order_id}")
-            raise ReconciliationError(f"broker order {order.broker_order_id} not found")
+            self.trip_kill_switch(
+                f"broker lost non-terminal order {order.broker_order_id}"
+            )
+            raise ReconciliationError(
+                f"broker order {order.broker_order_id} not found"
+            )
         updated = apply_broker_snapshot(order, snapshot)
         self.store.save(self._replace_order(state, updated))
         if updated.has_legging_exposure:
             self.trip_kill_switch(
-                f"uneven multi-leg fill detected for broker order {updated.broker_order_id}"
+                "uneven multi-leg fill detected for broker order "
+                f"{updated.broker_order_id}"
             )
         return updated
 
@@ -674,7 +758,9 @@ class PaperTradingEngine:
                 issues.append(
                     ReconciliationIssue(
                         code="missing_broker_order",
-                        message="persisted non-terminal order is missing at broker",
+                        message=(
+                            "persisted non-terminal order is missing at broker"
+                        ),
                         broker_order_id=order.broker_order_id,
                     )
                 )
@@ -702,13 +788,20 @@ class PaperTradingEngine:
                 )
         self.store.save(state)
         if issues:
-            self.trip_kill_switch("restart reconciliation found unresolved broker/local mismatches")
-        return ReconciliationReport(issues=tuple(issues), refreshed_orders=refreshed)
+            self.trip_kill_switch(
+                "restart reconciliation found unresolved broker/local mismatches"
+            )
+        return ReconciliationReport(
+            issues=tuple(issues),
+            refreshed_orders=refreshed,
+        )
 
     def reconcile_open_orders(self) -> ReconciliationReport:
-        """Compare broker working orders with the local journal and fail closed on drift."""
+        """Compare broker working orders with local state and fail closed."""
         state = self.store.load()
-        broker_orders = {item.broker_order_id: item for item in self.broker.open_orders()}
+        broker_orders = {
+            item.broker_order_id: item for item in self.broker.open_orders()
+        }
         local = {
             item.broker_order_id: item
             for item in state.orders
@@ -728,13 +821,18 @@ class PaperTradingEngine:
             issues.append(
                 ReconciliationIssue(
                     code="missing_open_order",
-                    message="local non-terminal order is absent from broker open orders",
+                    message=(
+                        "local non-terminal order is absent from broker open orders"
+                    ),
                     broker_order_id=broker_id,
                 )
             )
         for broker_id in sorted(set(local) & set(broker_orders)):
             try:
-                updated = apply_broker_snapshot(local[broker_id], broker_orders[broker_id])
+                updated = apply_broker_snapshot(
+                    local[broker_id],
+                    broker_orders[broker_id],
+                )
             except PaperTradingError as exc:
                 issues.append(
                     ReconciliationIssue(
@@ -756,5 +854,10 @@ class PaperTradingEngine:
                 )
         self.store.save(state)
         if issues:
-            self.trip_kill_switch("open-order reconciliation found broker/local drift")
-        return ReconciliationReport(issues=tuple(issues), refreshed_orders=refreshed)
+            self.trip_kill_switch(
+                "open-order reconciliation found broker/local drift"
+            )
+        return ReconciliationReport(
+            issues=tuple(issues),
+            refreshed_orders=refreshed,
+        )
