@@ -1,0 +1,65 @@
+name: Real SPY Bull Put Symmetric Exit Study
+
+on:
+  pull_request:
+    paths:
+      - "scripts/real_spy_put_symmetric_exit.py"
+      - "scripts/real_spy_put_trend.py"
+      - "scripts/real_spy_put_premium.py"
+      - "scripts/real_spy_side_attribution.py"
+      - "scripts/real_spy_baseline.py"
+      - ".github/workflows/real-spy-put-symmetric-exit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  symmetric-exit-study:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install CondorPilot and research dependency
+        run: |
+          python -m pip install -e .
+          python -m pip install 'duckdb>=1.3,<2'
+      - name: Download real SPY option history
+        run: |
+          mkdir -p /tmp/spy-symmetric-exit
+          for year in 2011 2012 2013 2014 2015 2016 2017 2018 2019 2020 2021 2022 2023 2024 2025; do
+            echo "Downloading SPY options ${year}"
+            curl -L --fail --retry 4 --retry-delay 2 \
+              -o "/tmp/spy-symmetric-exit/options_${year}.parquet" \
+              "https://raw.githubusercontent.com/anahatsingh-ui/options-dataset-hist/main/spy/options_${year}.parquet"
+          done
+          curl -L --fail --retry 4 --retry-delay 2 \
+            -o /tmp/spy-symmetric-exit/underlying_prices.parquet \
+            "https://raw.githubusercontent.com/anahatsingh-ui/options-dataset-hist/main/spy/underlying_prices.parquet"
+          du -sh /tmp/spy-symmetric-exit
+      - name: Run symmetric trend-break exit study
+        run: |
+          PYTHONPATH=. python scripts/real_spy_put_symmetric_exit.py \
+            --data-dir /tmp/spy-symmetric-exit \
+            --output /tmp/real-spy-symmetric-exit.json
+      - name: Show compact research result
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path('/tmp/real-spy-symmetric-exit.json').read_text())
+          print(json.dumps({
+              'stages': payload['stages'],
+              'qqq_external_holdout_ready': payload['qqq_external_holdout_ready'],
+          }, indent=2, sort_keys=True))
+          PY
+      - name: Upload symmetric-exit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-spy-symmetric-exit
+          path: /tmp/real-spy-symmetric-exit.json
