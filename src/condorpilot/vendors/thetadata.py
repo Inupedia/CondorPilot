@@ -139,14 +139,18 @@ def normalize_greeks_payload(
 ) -> OptionChainSnapshot:
     """Normalize one ThetaData ``option/history/greeks/all`` response.
 
-    Bulk responses may contain several intervals per contract. CondorPilot keeps the latest
-    usable row for each contract and fails if the selected rows imply materially inconsistent
-    underlying prices.
+    Every contract in the returned CondorPilot snapshot must come from the exact same timestamp.
+    The adapter chooses the latest timestamp containing enough usable contracts. It never takes
+    each contract's individual latest row, which would stitch different market moments together
+    and could fabricate an Iron Condor credit that never existed.
     """
     config = config or ThetaDataConfig()
     timezone = ZoneInfo(config.market_timezone)
     rows = _extract_rows(payload)
-    latest: dict[tuple[date, float, OptionType], tuple[datetime, OptionQuote, float]] = {}
+    buckets: dict[
+        datetime,
+        dict[tuple[date, float, OptionType], tuple[OptionQuote, float]],
+    ] = {}
 
     for row in rows:
         expiration = _parse_expiration(row.get("expiration"))
@@ -195,34 +199,39 @@ def normalize_greeks_payload(
             delta=delta,
             implied_volatility=implied_vol,
         )
-        key = (expiration, strike, option_type)
-        existing = latest.get(key)
-        if existing is None or timestamp > existing[0]:
-            latest[key] = (timestamp, quote, underlying_price)
+        contract = (expiration, strike, option_type)
+        buckets.setdefault(timestamp, {})[contract] = (quote, underlying_price)
 
-    if len(latest) < config.minimum_quotes:
+    eligible_timestamps = [
+        timestamp
+        for timestamp, contracts in buckets.items()
+        if len(contracts) >= config.minimum_quotes
+    ]
+    if not eligible_timestamps:
+        maximum = max((len(contracts) for contracts in buckets.values()), default=0)
         raise ThetaDataNoData(
-            f"ThetaData returned only {len(latest)} usable quotes for {symbol}"
+            f"ThetaData returned at most {maximum} synchronized usable quotes for {symbol}"
         )
 
-    selected = tuple(latest.values())
-    spots = [item[2] for item in selected]
+    observed_at = max(eligible_timestamps)
+    selected = tuple(buckets[observed_at].values())
+    spots = [item[1] for item in selected]
     spot = statistics.median(spots)
     dispersion = (max(spots) - min(spots)) / spot
     if dispersion > config.spot_dispersion_fraction:
         raise ThetaDataError(
-            "ThetaData selected rows have excessive underlying-price dispersion: "
+            "ThetaData synchronized rows have excessive underlying-price dispersion: "
             f"{dispersion:.2%}"
         )
-    observed_at = max(item[0] for item in selected)
+
     quotes = tuple(
-        item[1]
+        item[0]
         for item in sorted(
             selected,
             key=lambda item: (
-                item[1].expiration,
-                item[1].strike,
-                item[1].option_type.value,
+                item[0].expiration,
+                item[0].strike,
+                item[0].option_type.value,
             ),
         )
     )
@@ -246,7 +255,7 @@ class ThetaDataClient:
         url = f"{self.config.base_url.rstrip('/')}/{path.lstrip('/')}?{query}"
         request = urllib.request.Request(
             url,
-            headers={"Accept": "application/json", "User-Agent": "CondorPilot/0.4"},
+            headers={"Accept": "application/json", "User-Agent": "CondorPilot/0.5"},
         )
         try:
             with urllib.request.urlopen(request, timeout=self.config.timeout) as response:
