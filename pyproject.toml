@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "condorpilot"
-version = "0.8.1"
-description = "Research-preview Iron Condor engine for auditable data diagnostics, walk-forward validation, and evidence reports."
+version = "0.9.0"
+description = "Research-preview Iron Condor engine with auditable evidence and broker-agnostic paper-trading safety controls."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Inupedia" }]
