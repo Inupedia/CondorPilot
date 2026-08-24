@@ -1,0 +1,27 @@
+name: Cleanup stale research branches
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Delete stale branches and remove cleanup workflow
+        run: |
+          git push origin --delete \
+            research/real-spy-2020-2025 \
+            research/spy-side-attribution \
+            __cleanup_probe_should_not_exist
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/cleanup-stale-research-branches.yml
+          git commit -m "chore: remove branch cleanup workflow"
+          git push origin HEAD:main
