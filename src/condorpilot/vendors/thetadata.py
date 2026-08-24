@@ -309,7 +309,9 @@ class ThetaDataClient:
             rows.extend(_extract_rows(payload))
 
         if not rows:
-            raise ThetaDataNoData(f"ThetaData returned no Greeks rows for {symbol} on {observed_on}")
+            raise ThetaDataNoData(
+                f"ThetaData returned no Greeks rows for {symbol} on {observed_on}"
+            )
         return normalize_greeks_payload(rows, symbol=symbol, config=self.config)
 
     def fetch_history(
