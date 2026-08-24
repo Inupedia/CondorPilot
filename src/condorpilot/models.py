@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
@@ -23,6 +24,7 @@ class OptionQuote:
     bid: float
     ask: float
     delta: float
+    implied_volatility: float | None = None
 
     def __post_init__(self) -> None:
         if self.strike <= 0:
@@ -33,6 +35,9 @@ class OptionQuote:
             raise ValueError("ask must be greater than or equal to bid")
         if not -1.0 <= self.delta <= 1.0:
             raise ValueError("delta must be between -1 and 1")
+        if self.implied_volatility is not None:
+            if not math.isfinite(self.implied_volatility) or self.implied_volatility < 0:
+                raise ValueError("implied_volatility must be finite and non-negative")
 
     @property
     def mid(self) -> float:
