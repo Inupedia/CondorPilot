@@ -119,13 +119,23 @@ def test_normalize_rejects_when_no_timestamp_has_enough_quotes() -> None:
         )
 
 
-def test_client_requests_bulk_expirations_and_json() -> None:
-    captured: dict[str, object] = {}
+def test_client_uses_contract_discovery_then_concrete_expiration_greeks() -> None:
+    calls: list[tuple[str, dict[str, str]]] = []
 
     def requester(path: str, params) -> object:
-        captured["path"] = path
-        captured["params"] = dict(params)
-        return _payload()
+        calls.append((path, dict(params)))
+        if path == "option/list/contracts/quote":
+            return [
+                {
+                    "symbol": "SPY",
+                    "expiration": "2025-02-21",
+                    "strike": 100,
+                    "right": "call",
+                }
+            ]
+        if path == "option/history/greeks/all":
+            return _payload()
+        raise AssertionError(f"unexpected path {path}")
 
     client = ThetaDataClient(
         ThetaDataConfig(interval="30m", max_dte=75, strike_range=30),
@@ -134,11 +144,20 @@ def test_client_requests_bulk_expirations_and_json() -> None:
     snapshot = client.fetch_day("spy", date(2025, 1, 10))
 
     assert snapshot.symbol == "SPY"
-    assert captured["path"] == "option/history/greeks/all"
-    params = captured["params"]
-    assert isinstance(params, dict)
-    assert params["expiration"] == "*"
-    assert params["date"] == "2025-01-10"
-    assert params["format"] == "json"
-    assert params["max_dte"] == "75"
-    assert params["strike_range"] == "30"
+    assert len(calls) == 2
+
+    discovery_path, discovery = calls[0]
+    assert discovery_path == "option/list/contracts/quote"
+    assert discovery["date"] == "2025-01-10"
+    assert discovery["max_dte"] == "75"
+    assert discovery["format"] == "json"
+
+    greeks_path, greeks = calls[1]
+    assert greeks_path == "option/history/greeks/all"
+    assert greeks["expiration"] == "2025-02-21"
+    assert greeks["date"] == "2025-01-10"
+    assert greeks["right"] == "both"
+    assert greeks["interval"] == "30m"
+    assert greeks["strike_range"] == "30"
+    assert greeks["format"] == "json"
+    assert "max_dte" not in greeks
