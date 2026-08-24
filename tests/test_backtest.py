@@ -18,7 +18,7 @@ def test_backtest_closes_at_configured_time_exit() -> None:
         spots=[100.0] * 25,
         volatility=0.25,
         target_dte=45,
-        strike_increment=5.0,
+        strike_increment=1.0,
     )
     strategy = StrategyConfig(
         target_dte=45,
@@ -53,7 +53,7 @@ def test_backtest_forces_liquidation_at_end_of_data() -> None:
         spots=[100.0, 100.0],
         volatility=0.25,
         target_dte=45,
-        strike_increment=5.0,
+        strike_increment=1.0,
     )
     strategy = StrategyConfig(
         target_dte=45,
@@ -84,7 +84,7 @@ def test_missing_held_leg_fails_instead_of_interpolating_history() -> None:
         spots=[100.0, 100.0],
         volatility=0.25,
         target_dte=45,
-        strike_increment=5.0,
+        strike_increment=1.0,
     )
     strategy = StrategyConfig(min_credit_to_width=0.0)
     selected = build_iron_condor(
@@ -128,7 +128,7 @@ def test_backtest_rejects_post_expiration_spot_as_settlement_price() -> None:
         spots=[100.0] * 47,
         volatility=0.25,
         target_dte=45,
-        strike_increment=5.0,
+        strike_increment=1.0,
     )
     sparse_history = (history[0], history[46])
     strategy = StrategyConfig(
@@ -156,7 +156,7 @@ def test_result_reports_drawdown_and_win_rate() -> None:
         spots=[100.0] * 25,
         volatility=0.25,
         target_dte=45,
-        strike_increment=5.0,
+        strike_increment=1.0,
     )
     result = run_backtest(
         history,
