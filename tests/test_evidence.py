@@ -126,7 +126,8 @@ def test_evidence_run_is_traceable_and_never_approves_live_trading() -> None:
     assert len(result.experiment_fingerprint) == 64
     assert len(result.walk_forward.dataset.fingerprint) == 64
     assert result.known_regime_trade_fraction == 1.0
-    assert sum(item.trade_count for item in result.regime_evidence) == result.walk_forward.oos_trade_count
+    regime_trade_count = sum(item.trade_count for item in result.regime_evidence)
+    assert regime_trade_count == result.walk_forward.oos_trade_count
 
 
 def test_evidence_reports_insufficient_sample_before_outcome_quality() -> None:
