@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from condorpilot.backtest import BacktestConfig, BacktestResult, EntryFilter, ExitReason, run_backtest
 from condorpilot.diagnostics import DatasetDiagnostics, DiagnosticThresholds, diagnose_dataset
 from condorpilot.history import OptionChainSnapshot, validate_history
+from condorpilot.models import StrategyConfig
 from condorpilot.research import (
     ParameterGrid,
     ResearchMetrics,
@@ -19,6 +20,16 @@ from condorpilot.research import (
     rank_runs,
     summarize_result,
 )
+
+_SUPPORTED_RANK_METRICS = {
+    "total_return",
+    "cagr",
+    "sharpe",
+    "sortino",
+    "win_rate",
+    "profit_factor",
+    "average_trade",
+}
 
 
 class WalkForwardError(ValueError):
@@ -44,6 +55,9 @@ class WalkForwardConfig:
             raise ValueError("test_size must be at least 2 snapshots")
         if self.step_size < self.test_size:
             raise ValueError("step_size must be at least test_size to avoid overlapping OOS folds")
+        if self.rank_by not in _SUPPORTED_RANK_METRICS:
+            choices = ", ".join(sorted(_SUPPORTED_RANK_METRICS))
+            raise ValueError(f"unsupported rank_by {self.rank_by!r}; choose one of {choices}")
         if self.min_train_trades < 0:
             raise ValueError("min_train_trades must be non-negative")
 
@@ -64,8 +78,8 @@ class WalkForwardFold:
     train_metrics: ResearchMetrics
     test_metrics: ResearchMetrics
     buy_hold_return: float
+    test_result: BacktestResult = field(repr=False, compare=False)
     cash_return: float = 0.0
-    test_result: BacktestResult = field(repr=False, compare=False, default=None)  # type: ignore[arg-type]
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,7 +156,7 @@ class WalkForwardResult:
         return tuple(sorted(counts.items(), key=lambda item: (-item[1], repr(item[0]))))
 
 
-def _strategy_for(parameters: ResearchParameters, base: BacktestConfig):
+def _strategy_for(parameters: ResearchParameters, base: BacktestConfig) -> StrategyConfig:
     return replace(
         base.strategy,
         target_dte=parameters.target_dte,
@@ -158,7 +172,7 @@ def _strategy_for(parameters: ResearchParameters, base: BacktestConfig):
 def _fold_entry_filter(
     *,
     fold_end: datetime,
-    strategy,
+    strategy: StrategyConfig,
     external: EntryFilter | None,
 ) -> EntryFilter:
     """Block entries that cannot reach the configured time exit before the fold ends."""
