@@ -259,5 +259,6 @@ def rank_runs(
         "average_trade",
     }
     if metric not in supported:
-        raise ValueError(f"unsupported ranking metric {metric!r}; choose one of {sorted(supported)}")
+        choices = sorted(supported)
+        raise ValueError(f"unsupported ranking metric {metric!r}; choose one of {choices}")
     return tuple(sorted(runs, key=lambda run: getattr(run.metrics, metric), reverse=True))
