@@ -92,8 +92,9 @@ def load_option_chain_csv(path: str | Path) -> tuple[OptionChainSnapshot, ...]:
             if existing is None:
                 metadata[observed_at] = (symbol, spot)
             elif existing[0] != symbol or abs(existing[1] - spot) > 1e-9:
+                snapshot = observed_at.isoformat()
                 raise CsvHistoryError(
-                    f"row {row_number}: symbol/spot differs within snapshot {observed_at.isoformat()}"
+                    f"row {row_number}: symbol/spot differs within snapshot {snapshot}"
                 )
 
             key = (expiration, strike, option_type)
