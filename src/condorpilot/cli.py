@@ -8,13 +8,22 @@ from datetime import UTC, date, datetime
 
 from condorpilot.backtest import BacktestConfig, run_backtest
 from condorpilot.execution import ExecutionConfig
-from condorpilot.history import build_synthetic_history
-from condorpilot.importers import load_option_chain_csv
+from condorpilot.history import OptionChainSnapshot, build_synthetic_history
+from condorpilot.importers import load_option_chain_csv, save_option_chain_csv
 from condorpilot.market import SyntheticChainSpec, build_synthetic_chain
 from condorpilot.models import StrategyConfig
 from condorpilot.research import ParameterGrid, rank_runs, run_parameter_sweep
 from condorpilot.risk import contracts_for_risk_budget
 from condorpilot.strategy import NoTradeError, build_iron_condor
+from condorpilot.vendors.thetadata import ThetaDataClient, ThetaDataConfig
+from condorpilot.volatility import (
+    VolatilityRegime,
+    build_regime_entry_filter,
+    build_volatility_regimes,
+    fetch_cboe_vix_history,
+    load_vix_csv,
+    regime_counts,
+)
 
 
 def _int_list(value: str) -> tuple[int, ...]:
@@ -35,6 +44,28 @@ def _float_list(value: str) -> tuple[float, ...]:
     if not parsed:
         raise argparse.ArgumentTypeError("list must not be empty")
     return parsed
+
+
+def _regime_list(value: str) -> tuple[VolatilityRegime, ...]:
+    try:
+        parsed = tuple(
+            VolatilityRegime(item.strip().lower())
+            for item in value.split(",")
+            if item.strip()
+        )
+    except ValueError as exc:
+        choices = ", ".join(regime.value for regime in VolatilityRegime)
+        raise argparse.ArgumentTypeError(f"regimes must be selected from: {choices}") from exc
+    if not parsed:
+        raise argparse.ArgumentTypeError("regime list must not be empty")
+    return parsed
+
+
+def _date_value(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("date must use YYYY-MM-DD") from exc
 
 
 def _demo(args: argparse.Namespace) -> int:
@@ -100,17 +131,38 @@ def _synthetic_spots(args: argparse.Namespace) -> list[float]:
     ]
 
 
-def _backtest_demo(args: argparse.Namespace) -> int:
-    start = datetime(2025, 1, 2, 21, 0, tzinfo=UTC)
-    history = build_synthetic_history(
+def _synthetic_history(args: argparse.Namespace) -> tuple[OptionChainSnapshot, ...]:
+    target_dte = getattr(args, "dte", None)
+    if target_dte is None:
+        target_dte = min(getattr(args, "dtes", (45,)))
+    return build_synthetic_history(
         symbol=args.symbol,
-        start=start,
+        start=datetime(2025, 1, 2, 21, 0, tzinfo=UTC),
         spots=_synthetic_spots(args),
         volatility=args.iv,
         risk_free_rate=args.rate,
-        target_dte=args.dte,
+        target_dte=target_dte,
+        expiration_interval_days=15,
         strike_increment=args.strike_increment,
     )
+
+
+def _load_history(args: argparse.Namespace) -> tuple[OptionChainSnapshot, ...]:
+    if getattr(args, "csv", None):
+        return load_option_chain_csv(args.csv)
+    return _synthetic_history(args)
+
+
+def _load_vix(args: argparse.Namespace):
+    if getattr(args, "vix_csv", None):
+        return load_vix_csv(args.vix_csv)
+    if getattr(args, "fetch_cboe_vix", False):
+        return fetch_cboe_vix_history()
+    return ()
+
+
+def _backtest_demo(args: argparse.Namespace) -> int:
+    history = _synthetic_history(args)
     strategy = StrategyConfig(
         target_dte=args.dte,
         short_delta=args.delta,
@@ -134,7 +186,7 @@ def _backtest_demo(args: argparse.Namespace) -> int:
         ),
     )
 
-    print(f"CondorPilot backtest demo | {args.symbol} | {args.days} synthetic daily snapshots")
+    print(f"CondorPilot backtest demo | {args.symbol} | {args.days} synthetic snapshots")
     print(
         f"Equity: ${result.initial_equity:,.2f} -> ${result.final_equity:,.2f} "
         f"({result.total_return:+.2%})"
@@ -163,21 +215,22 @@ def _research(args: argparse.Namespace) -> int:
         exit_dte=args.exit_dtes,
         max_risk_fraction=args.risk_fractions,
     )
-    if args.csv:
-        history = load_option_chain_csv(args.csv)
-        source = args.csv
-    else:
-        history = build_synthetic_history(
-            symbol=args.symbol,
-            start=datetime(2025, 1, 2, 21, 0, tzinfo=UTC),
-            spots=_synthetic_spots(args),
-            volatility=args.iv,
-            risk_free_rate=args.rate,
-            target_dte=min(args.dtes),
-            expiration_interval_days=15,
-            strike_increment=args.strike_increment,
+    history = _load_history(args)
+    source = args.csv if args.csv else f"synthetic:{args.symbol}:{args.days}d"
+    entry_filter = None
+    regime_note = "all"
+    if args.allowed_regimes:
+        observations = build_volatility_regimes(
+            history,
+            vix_history=_load_vix(args),
+            iv_lookback=args.iv_lookback,
+            target_iv_dte=args.target_iv_dte,
         )
-        source = f"synthetic:{args.symbol}:{args.days}d"
+        entry_filter = build_regime_entry_filter(
+            observations,
+            allowed_regimes=args.allowed_regimes,
+        )
+        regime_note = ",".join(item.value for item in args.allowed_regimes)
 
     base = BacktestConfig(
         initial_equity=args.account_equity,
@@ -187,7 +240,12 @@ def _research(args: argparse.Namespace) -> int:
             commission_per_contract_per_leg=args.commission,
         ),
     )
-    runs = run_parameter_sweep(history, grid=grid, base_config=base)
+    runs = run_parameter_sweep(
+        history,
+        grid=grid,
+        base_config=base,
+        entry_filter=entry_filter,
+    )
     if not runs:
         print("No valid research cases after applying strategy constraints.")
         return 2
@@ -195,7 +253,7 @@ def _research(args: argparse.Namespace) -> int:
 
     print(
         f"CondorPilot research | source={source} | snapshots={len(history)} | "
-        f"cases={len(runs)} | rank={args.rank_by}"
+        f"cases={len(runs)} | rank={args.rank_by} | entry_regimes={regime_note}"
     )
     print("rank dte delta wing tp stop exit risk return cagr maxdd sharpe sortino win pf trades")
     for index, run in enumerate(ranked[: args.top], start=1):
@@ -212,6 +270,54 @@ def _research(args: argparse.Namespace) -> int:
     return 0
 
 
+def _regimes(args: argparse.Namespace) -> int:
+    history = _load_history(args)
+    observations = build_volatility_regimes(
+        history,
+        vix_history=_load_vix(args),
+        iv_lookback=args.iv_lookback,
+        target_iv_dte=args.target_iv_dte,
+    )
+    counts = regime_counts(observations)
+    print(
+        "CondorPilot regimes | "
+        + " ".join(f"{regime.value}={counts[regime]}" for regime in VolatilityRegime)
+    )
+    print("date       atm_iv iv_pct iv_rank vix   regime")
+    for item in observations[-args.tail :]:
+        atm_iv = "-" if item.atm_iv is None else f"{item.atm_iv:.3f}"
+        iv_pct = "-" if item.iv_percentile is None else f"{item.iv_percentile:.0%}"
+        iv_rank = "-" if item.iv_rank is None else f"{item.iv_rank:.0%}"
+        vix = "-" if item.vix_close is None else f"{item.vix_close:.2f}"
+        print(
+            f"{item.observed_on} {atm_iv:>6} {iv_pct:>6} {iv_rank:>7} "
+            f"{vix:>5} {item.regime.value}"
+        )
+    return 0
+
+
+def _import_thetadata(args: argparse.Namespace) -> int:
+    config = ThetaDataConfig(
+        base_url=args.base_url,
+        interval=args.interval,
+        start_time=args.start_time,
+        end_time=args.end_time,
+        max_dte=args.max_dte,
+        strike_range=args.strike_range,
+    )
+    history = ThetaDataClient(config).fetch_history(
+        args.symbol,
+        start_date=args.start_date,
+        end_date=args.end_date,
+    )
+    save_option_chain_csv(history, args.output)
+    print(
+        f"Saved {len(history)} ThetaData snapshots for {args.symbol.upper()} "
+        f"to {args.output}"
+    )
+    return 0
+
+
 def _add_synthetic_market_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--symbol", default="SPY")
     parser.add_argument("--spot", type=float, default=650.0)
@@ -221,6 +327,17 @@ def _add_synthetic_market_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--strike-increment", type=float, default=5.0)
     parser.add_argument("--trend-per-day", type=float, default=0.0002)
     parser.add_argument("--swing", type=float, default=0.012)
+
+
+def _add_regime_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--vix-csv", help="Cboe-compatible daily VIX CSV")
+    parser.add_argument(
+        "--fetch-cboe-vix",
+        action="store_true",
+        help="Fetch Cboe's public VIX history directly",
+    )
+    parser.add_argument("--iv-lookback", type=int, default=252)
+    parser.add_argument("--target-iv-dte", type=int, default=30)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -267,6 +384,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Sweep strategy parameters over CSV or synthetic option-chain history",
     )
     _add_synthetic_market_args(research)
+    _add_regime_args(research)
     research.add_argument("--csv", help="Long-form historical option-chain CSV")
     research.add_argument("--dtes", type=_int_list, default=(30, 45, 60))
     research.add_argument("--deltas", type=_float_list, default=(0.10, 0.15, 0.20))
@@ -275,6 +393,7 @@ def build_parser() -> argparse.ArgumentParser:
     research.add_argument("--stop-multiples", type=_float_list, default=(2.0,))
     research.add_argument("--exit-dtes", type=_int_list, default=(14, 21))
     research.add_argument("--risk-fractions", type=_float_list, default=(0.01,))
+    research.add_argument("--allowed-regimes", type=_regime_list)
     research.add_argument("--min-credit-to-width", type=float, default=0.10)
     research.add_argument("--account-equity", type=float, default=50_000.0)
     research.add_argument("--slippage", type=float, default=0.25)
@@ -294,6 +413,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     research.add_argument("--top", type=int, default=10)
     research.set_defaults(handler=_research)
+
+    regimes = subparsers.add_parser(
+        "regimes",
+        help="Classify CSV or synthetic history into VIX/IV volatility regimes",
+    )
+    _add_synthetic_market_args(regimes)
+    _add_regime_args(regimes)
+    regimes.add_argument("--csv", help="Long-form historical option-chain CSV")
+    regimes.add_argument("--tail", type=int, default=20)
+    regimes.set_defaults(handler=_regimes)
+
+    theta = subparsers.add_parser(
+        "import-thetadata",
+        help="Import daily historical option snapshots from a running Theta Terminal v3",
+    )
+    theta.add_argument("--symbol", default="SPY")
+    theta.add_argument("--start-date", type=_date_value, required=True)
+    theta.add_argument("--end-date", type=_date_value, required=True)
+    theta.add_argument("--output", required=True)
+    theta.add_argument("--base-url", default="http://127.0.0.1:25503/v3")
+    theta.add_argument("--interval", default="30m")
+    theta.add_argument("--start-time", default="15:30:00")
+    theta.add_argument("--end-time", default="16:00:00")
+    theta.add_argument("--max-dte", type=int, default=90)
+    theta.add_argument("--strike-range", type=int, default=40)
+    theta.set_defaults(handler=_import_thetadata)
     return parser
 
 

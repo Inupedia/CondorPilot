@@ -7,7 +7,7 @@ import math
 import statistics
 from dataclasses import dataclass, field
 
-from condorpilot.backtest import BacktestConfig, BacktestResult, run_backtest
+from condorpilot.backtest import BacktestConfig, BacktestResult, EntryFilter, run_backtest
 from condorpilot.history import OptionChainSnapshot, validate_history
 from condorpilot.models import StrategyConfig
 
@@ -214,6 +214,7 @@ def run_parameter_sweep(
     *,
     grid: ParameterGrid | None = None,
     base_config: BacktestConfig | None = None,
+    entry_filter: EntryFilter | None = None,
 ) -> tuple[ResearchRun, ...]:
     """Backtest every valid parameter combination against the exact same history."""
     history = validate_history(snapshots)
@@ -232,6 +233,7 @@ def run_parameter_sweep(
                 strategy=strategy,
                 execution=base_config.execution,
             ),
+            entry_filter=entry_filter,
         )
         runs.append(
             ResearchRun(

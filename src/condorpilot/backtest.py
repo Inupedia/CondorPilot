@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import StrEnum
@@ -11,6 +12,8 @@ from condorpilot.history import HistoricalDataError, OptionChainSnapshot, valida
 from condorpilot.models import IronCondor, StrategyConfig
 from condorpilot.risk import ExitAction, contracts_for_risk_budget, evaluate_exit
 from condorpilot.strategy import NoTradeError, build_iron_condor
+
+EntryFilter = Callable[[OptionChainSnapshot], bool]
 
 
 class BacktestDataError(HistoricalDataError):
@@ -194,16 +197,33 @@ def _marked_equity(
     )
 
 
+def _append_flat_equity(
+    equity_curve: list[EquityPoint],
+    *,
+    snapshot: OptionChainSnapshot,
+    realized_equity: float,
+) -> None:
+    equity_curve.append(
+        EquityPoint(
+            observed_at=snapshot.observed_at,
+            equity=realized_equity,
+            realized_equity=realized_equity,
+            has_open_position=False,
+        )
+    )
+
+
 def run_backtest(
     snapshots: tuple[OptionChainSnapshot, ...] | list[OptionChainSnapshot],
     *,
     config: BacktestConfig | None = None,
+    entry_filter: EntryFilter | None = None,
 ) -> BacktestResult:
     """Run a single-position event-driven backtest over timestamped option chains.
 
-    The engine never reconstructs option prices from the underlying during a real historical
-    run. Entry selection and every pre-expiration mark must come from the supplied snapshots.
-    Synthetic histories are intended only for deterministic demos and tests.
+    ``entry_filter`` is evaluated only while flat. Held positions continue to be marked and
+    managed on every snapshot, even when that snapshot would reject a new entry. This makes
+    volatility/event regime filters safe to compose without corrupting position valuation.
     """
     config = config or BacktestConfig()
     history = validate_history(snapshots)
@@ -272,24 +292,26 @@ def run_backtest(
             trades.append(trade)
             realized_equity += trade.net_pnl
             position = None
-            equity_curve.append(
-                EquityPoint(
-                    observed_at=snapshot.observed_at,
-                    equity=realized_equity,
-                    realized_equity=realized_equity,
-                    has_open_position=False,
-                )
+            _append_flat_equity(
+                equity_curve,
+                snapshot=snapshot,
+                realized_equity=realized_equity,
             )
             continue
 
         if is_last:
-            equity_curve.append(
-                EquityPoint(
-                    observed_at=snapshot.observed_at,
-                    equity=realized_equity,
-                    realized_equity=realized_equity,
-                    has_open_position=False,
-                )
+            _append_flat_equity(
+                equity_curve,
+                snapshot=snapshot,
+                realized_equity=realized_equity,
+            )
+            continue
+
+        if entry_filter is not None and not entry_filter(snapshot):
+            _append_flat_equity(
+                equity_curve,
+                snapshot=snapshot,
+                realized_equity=realized_equity,
             )
             continue
 
@@ -301,35 +323,26 @@ def run_backtest(
                 config=config.strategy,
             )
         except NoTradeError:
-            equity_curve.append(
-                EquityPoint(
-                    observed_at=snapshot.observed_at,
-                    equity=realized_equity,
-                    realized_equity=realized_equity,
-                    has_open_position=False,
-                )
+            _append_flat_equity(
+                equity_curve,
+                snapshot=snapshot,
+                realized_equity=realized_equity,
             )
             continue
 
         modeled_entry_credit = entry_credit(condor, config.execution)
         if modeled_entry_credit <= 0:
-            equity_curve.append(
-                EquityPoint(
-                    observed_at=snapshot.observed_at,
-                    equity=realized_equity,
-                    realized_equity=realized_equity,
-                    has_open_position=False,
-                )
+            _append_flat_equity(
+                equity_curve,
+                snapshot=snapshot,
+                realized_equity=realized_equity,
             )
             continue
         if modeled_entry_credit / condor.max_width < config.strategy.min_credit_to_width:
-            equity_curve.append(
-                EquityPoint(
-                    observed_at=snapshot.observed_at,
-                    equity=realized_equity,
-                    realized_equity=realized_equity,
-                    has_open_position=False,
-                )
+            _append_flat_equity(
+                equity_curve,
+                snapshot=snapshot,
+                realized_equity=realized_equity,
             )
             continue
 
@@ -347,13 +360,10 @@ def run_backtest(
             max_risk_fraction=config.strategy.max_risk_fraction,
         )
         if contracts == 0:
-            equity_curve.append(
-                EquityPoint(
-                    observed_at=snapshot.observed_at,
-                    equity=realized_equity,
-                    realized_equity=realized_equity,
-                    has_open_position=False,
-                )
+            _append_flat_equity(
+                equity_curve,
+                snapshot=snapshot,
+                realized_equity=realized_equity,
             )
             continue
 
