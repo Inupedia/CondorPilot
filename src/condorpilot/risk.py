@@ -40,10 +40,11 @@ def evaluate_exit(
     dte: int,
     config: StrategyConfig | None = None,
 ) -> ExitAction:
-    """Evaluate the mechanical 50% TP / credit-multiple SL / time-exit policy.
+    """Evaluate profit target, close-debit stop, and time exit.
 
-    Prices are per share. For example, an entry credit of 1.00 and a current
-    close debit of 0.50 represents a 50% profit target being reached.
+    ``stop_loss_credit_multiple`` is intentionally defined on the *close debit*, not the loss.
+    With an entry credit of 1.00 and the default multiple of 2.0, the stop triggers when the
+    modeled close debit reaches 2.00. The realized loss before fees is therefore 1.00.
     """
     if entry_credit <= 0:
         raise ValueError("entry_credit must be positive")
@@ -54,11 +55,10 @@ def evaluate_exit(
 
     config = config or StrategyConfig()
     profit = entry_credit - current_close_debit
-    loss = current_close_debit - entry_credit
 
     if profit >= entry_credit * config.profit_target_fraction:
         return ExitAction.TAKE_PROFIT
-    if loss >= entry_credit * config.stop_loss_credit_multiple:
+    if current_close_debit >= entry_credit * config.stop_loss_credit_multiple:
         return ExitAction.STOP_LOSS
     if dte <= config.exit_dte:
         return ExitAction.TIME_EXIT
