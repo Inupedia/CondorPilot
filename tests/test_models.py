@@ -4,7 +4,6 @@ import pytest
 
 from condorpilot.models import IronCondor, OptionQuote, OptionType
 
-
 EXPIRATION = date(2026, 10, 16)
 
 
