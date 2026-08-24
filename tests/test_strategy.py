@@ -17,7 +17,8 @@ def test_strategy_selects_target_delta_and_exact_wings() -> None:
             dte=45,
             volatility=0.25,
             strike_increment=1.0,
-            strikes_each_side=15,
+            strikes_each_side=25,
+            bid_ask_spread=0.01,
         ),
         as_of=AS_OF,
     )
@@ -81,7 +82,8 @@ def test_strategy_rejects_unattractive_credit() -> None:
             dte=45,
             volatility=0.20,
             strike_increment=1.0,
-            strikes_each_side=15,
+            strikes_each_side=25,
+            bid_ask_spread=0.01,
         ),
         as_of=AS_OF,
     )
